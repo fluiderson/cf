@@ -220,17 +220,14 @@ No internal module dependencies — Todo App is a standalone module with no plat
 
 #### WebSocket Sync Backend
 
-**Contract**: `cpt-examples-todo-app-interface-websocket`
-
 **Type**: External API
 **Direction**: bidirectional
 **Protocol / Driver**: WebSocket + JSON; messages follow format: `{ type: "sync" | "update" | "delete", payload: Task }`
 **Data Format**: JSON (follows Task model from `cpt-examples-todo-app-interface-task-model`)
 **Compatibility**: Protocol version negotiated on connection; supports fallback to HTTP polling
+**References**: PRD `cpt-examples-todo-app-contract-sync`
 
 #### IndexedDB (Browser Local Storage)
-
-**Contract**: `cpt-examples-todo-app-interface-indexeddb`
 
 **Type**: Database
 **Direction**: bidirectional

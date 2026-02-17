@@ -1,6 +1,6 @@
 ---
 status: accepted
-date: {2024-01-15}
+date: 2024-01-15
 --- 
 # ADR-0001: Use IndexedDB for Offline Storage
 

@@ -341,6 +341,8 @@ For `private` secrets, owner match is guaranteed by ExternalID construction (own
 
 #### VendorA Credstore REST API
 
+- [ ] `p1` - **ID**: `cpt-cf-credstore-design-interface-vendor_a-rest`
+
 **Type**: External System
 
 **Direction**: outbound

@@ -1,6 +1,6 @@
 ---
 status: accepted
-date: {2026-02-07}
+date: 2026-02-07
 --- 
 
 # ADR-0002: Optimistic UI Updates

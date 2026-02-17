@@ -79,11 +79,15 @@ See [PRD.md](./PRD.md) section 1 "Overview" — Key Problems Solved:
 
 **ID**: `cpt-cf-llm-gateway-principle-stateless`
 
+**ADRs**: `cpt-cf-llm-gateway-adr-stateless`
+
 Gateway does not store conversation history. Consumer provides full context with each request. Exception: temporary async job state.
 
 #### Pass-through
 
 **ID**: `cpt-cf-llm-gateway-principle-pass-through`
+
+**ADRs**: `cpt-cf-llm-gateway-adr-pass-through`
 
 Gateway normalizes but does not interpret content. Tool execution and response parsing are consumer responsibility.
 
