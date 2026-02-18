@@ -7,8 +7,8 @@ authors.workspace = true
 description = "SDK for authz_resolver module: evaluation API, constraints, PEP compiler"
 repository.workspace = true
 readme = "README.md"
-keywords = ["cyberfabric", "cyberfabric-system"]
-categories = ["authorization"]
+keywords = ["cyberfabric", "cyberfabric-system", "authorization"]
+categories = ["authentication"]
 
 [lib]
 name = "authz_resolver_sdk"

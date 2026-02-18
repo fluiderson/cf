@@ -7,8 +7,8 @@ authors.workspace = true
 description = "AuthZ resolver plugin with static tenant-scoped policy for development and testing"
 repository.workspace = true
 readme = "README.md"
-keywords = ["cyberfabric", "cyberfabric-system"]
-categories = ["authorization"]
+keywords = ["cyberfabric", "cyberfabric-system", "authorization"]
+categories = ["authentication"]
 
 [lib]
 name = "static_authz_plugin"
