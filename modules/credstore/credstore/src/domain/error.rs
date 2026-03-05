@@ -138,6 +138,7 @@ mod tests {
     #[test]
     fn from_choose_plugin_error_not_found_becomes_plugin_not_found() {
         let src = ChoosePluginError::PluginNotFound {
+            schema_id: "gts.x.core.test.v1~".into(),
             vendor: "acme".into(),
         };
         let dst = DomainError::from(src);
