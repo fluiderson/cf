@@ -8,7 +8,7 @@ use modkit_db::secure::{DBRunner, SecureEntityExt, exec_custom_all, secure_inser
 use modkit_odata::{ODataQuery, Page, SortDir};
 use modkit_security::AccessScope;
 use sea_orm::{
-    ColumnTrait, Condition, EntityTrait, FromQueryResult, JoinType, Order, QueryFilter,
+    ColumnTrait, Condition, EntityTrait, FromQueryResult, JoinType, Order, QueryFilter, QueryOrder,
     QuerySelect, RelationTrait, Set,
 };
 use time::OffsetDateTime;
@@ -216,6 +216,8 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
                     .add(MaCol::MessageId.is_in(message_ids.iter().copied()))
                     .add(AttCol::DeletedAt.is_null()),
             )
+            .order_by(MaCol::CreatedAt, Order::Asc)
+            .order_by(AttCol::Id, Order::Asc)
             .into_model::<AttachmentRow>();
 
         let rows: Vec<AttachmentRow> = exec_custom_all(select, runner)
