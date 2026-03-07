@@ -387,6 +387,7 @@ impl<
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<tokio::task::JoinHandle<StreamOutcome>, StreamError> {
         let model = resolved_model.model_id;
+        let provider_model_id = resolved_model.provider_model_id;
         let provider_id = resolved_model.provider_id;
 
         let tenant_id = ctx.subject_tenant_id();
@@ -600,9 +601,10 @@ impl<
             }
         })?;
         // Build the full OAGW proxy path: {alias}{api_path} with {model} substituted.
+        // Use provider_model_id (the actual provider-facing model name) for the LLM request.
         let api_path = resolved_provider
             .api_path
-            .replace("{model}", &pf.effective_model);
+            .replace("{model}", &provider_model_id);
         let proxy_path = format!("{}{api_path}", resolved_provider.upstream_alias);
 
         Ok(spawn_provider_task(
@@ -610,7 +612,7 @@ impl<
             proxy_path,
             ctx,
             content,
-            pf.effective_model,
+            provider_model_id,
             pf.max_output_tokens_applied.cast_unsigned(),
             cancel,
             tx,
@@ -1453,6 +1455,7 @@ mod tests {
                     policy_version: 1,
                     model_catalog: vec![mini_chat_sdk::ModelCatalogEntry {
                         model_id: "gpt-5.2".to_owned(),
+                        provider_model_id: "gpt-5.2".to_owned(),
                         display_name: "GPT 5.2".to_owned(),
                         tier: mini_chat_sdk::ModelTier::Standard,
                         global_enabled: true,
@@ -1597,6 +1600,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel,
@@ -1662,6 +1666,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel,
@@ -1744,6 +1749,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel,
@@ -1826,6 +1832,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel,
@@ -1893,6 +1900,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel,
@@ -1931,6 +1939,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel,
@@ -1985,6 +1994,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel1,
@@ -2013,6 +2023,7 @@ mod tests {
                 "hello again".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel2,
@@ -2099,6 +2110,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel.clone(),
@@ -2167,6 +2179,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel,
@@ -2341,6 +2354,7 @@ mod tests {
     ) -> mini_chat_sdk::ModelCatalogEntry {
         mini_chat_sdk::ModelCatalogEntry {
             model_id: id.to_owned(),
+            provider_model_id: id.to_owned(),
             display_name: id.to_owned(),
             tier,
             global_enabled: true,
@@ -2479,6 +2493,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel,
@@ -2574,6 +2589,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel,
@@ -2636,6 +2652,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5".into(),
+                    provider_model_id: "gpt-5".into(),
                     provider_id: "openai".into(),
                 },
                 cancel,
@@ -2701,6 +2718,7 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5.2".into(),
+                    provider_model_id: "gpt-5.2".into(),
                     provider_id: "openai".into(),
                 },
                 cancel,
