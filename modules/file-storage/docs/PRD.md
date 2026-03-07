@@ -669,18 +669,29 @@ versioning capability is available for a backend, the system **MUST**:
 - Retrieve metadata of a specific file version by its version identifier
 - List all versions (current and non-current) of a file, including each version's identifier, size, last modified
   timestamp, and whether it is the current version
-- Soft-delete a file (without specifying a version) such that the current version becomes inaccessible while all
-  non-current versions remain retrievable by their version identifiers
+- Soft-delete a file (without specifying a version) by placing a logical delete marker on the current version. The
+  delete marker makes the current version inaccessible through normal file access (download, metadata queries) while
+  all non-current versions remain retrievable by their version identifiers. Soft-deleted content is **not** physically
+  removed from the storage backend — it continues to exist and **MUST** count against the owner's storage quota
+  (`cpt-cf-file-storage-fr-storage-quota`)
+- Restore a soft-deleted file by removing the delete marker, making the most recent non-current version the current
+  version again. Restore **MUST** require the same authorization as upload
 - Permanently delete a specific file version by its version identifier
 - Treat version identifiers as opaque strings — the system **MUST NOT** assume any specific format, ordering, or
   parseable structure of version identifiers across storage backends
+
+Garbage collection (`cpt-cf-file-storage-fr-gc-direct-uploads`) does **NOT** apply to soft-deleted versions —
+soft-delete is an intentional owner action, not an orphaned state. Cleanup of soft-deleted versions is governed by
+retention policies (`cpt-cf-file-storage-fr-retention-policies`).
 
 The system **MUST** apply the same authorization, tenant boundary enforcement, and audit requirements to all versioned
 operations as to non-versioned file operations.
 
 **Rationale**: File versioning enables recovery from accidental overwrites and deletions, supports audit and compliance
 workflows that require historical access to file content, and aligns with capabilities universally available across
-major storage backends (S3, GCS, Azure Blob, MinIO, Ceph, Backblaze B2).  
+major storage backends (S3, GCS, Azure Blob, MinIO, Ceph, Backblaze B2). Logical delete markers (rather than physical
+removal) enable restoration and follow the established pattern of S3 versioned deletes, GCS soft-delete, and Azure Blob
+soft-delete. Counting soft-deleted content against quota prevents quota bypass through repeated soft-delete cycles.  
 **Actors**: `cpt-cf-file-storage-actor-platform-user`, `cpt-cf-file-storage-actor-cf-modules`
 
 #### File Encryption
@@ -1372,7 +1383,11 @@ changes.
 - [ ] Operations requiring an unsupported capability return a clear error
 - [ ] File versioning creates a new version on each upload; previous versions remain accessible by opaque version ID
 - [ ] All versions of a file are listable with version ID, size, timestamp, and current-version flag
-- [ ] Soft-delete hides the current version while non-current versions remain retrievable
+- [ ] Soft-delete places a logical delete marker; current version becomes inaccessible but content is not physically
+  removed
+- [ ] Soft-deleted content counts against storage quota
+- [ ] Restore of a soft-deleted file removes the delete marker and reinstates the previous current version
+- [ ] Garbage collection does not clean up soft-deleted versions
 - [ ] Permanent delete of a specific version removes only that version
 - [ ] Declared capabilities are independently configurable (enable/disable) per backend
 - [ ] A capability disabled by configuration behaves identically to an unsupported capability
