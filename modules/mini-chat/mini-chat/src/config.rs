@@ -45,6 +45,7 @@ pub struct ProviderEntry {
     pub upstream_alias: Option<String>,
     /// Upstream hostname (e.g., `api.openai.com`). Used for OAGW upstream
     /// registration during module init.
+    #[expand_vars]
     pub host: String,
     /// API path template for the responses endpoint.
     /// Use `{model}` as placeholder for the deployment/model name.

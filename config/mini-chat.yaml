@@ -101,7 +101,7 @@ modules:
     config:
       secrets:
         - key: "azure-openai-key"
-          value: "${AZURE_API_KEY}"
+          value: "${AZURE_OPENAI_API_KEY}"
 
   file-parser:
     config:
@@ -117,7 +117,7 @@ modules:
       providers:
         azure_openai:
           kind: openai_responses
-          host: "AZURE_OPENAI_API_HOST_PLACEHOLDER"
+          host: "${AZURE_OPENAI_API_HOST}"
           api_path: "/openai/v1/responses"
           auth_plugin_type: "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1"
           auth_config:

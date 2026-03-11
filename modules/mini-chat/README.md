@@ -31,33 +31,20 @@ This starts the server at `http://127.0.0.1:8087` with SQLite, mock auth, and si
 
 Config file: **`config/mini-chat.yaml`**
 
-#### Setting the LLM API key
+#### Setting up Azure OpenAI credentials
 
-Find the `static-credstore-plugin` section and set your key:
+Export two environment variables before starting the server:
 
-```yaml
-static-credstore-plugin:
-  config:
-    secrets:
-      - key: "azure-openai-key"
-        value: "<YOUR_API_KEY>"
+```bash
+export AZURE_OPENAI_API_KEY="<your-api-key>"
+export AZURE_OPENAI_API_HOST="<your-resource>.openai.azure.com"
 ```
 
-#### Setting the LLM provider endpoint
+The config references these via `${AZURE_OPENAI_API_KEY}` and `${AZURE_OPENAI_API_HOST}` — no need to edit the YAML for basic setup.
 
-Find the `mini-chat` -> `config` -> `providers` section:
+#### Per-tenant provider overrides (optional)
 
-```yaml
-mini-chat:
-  config:
-    providers:
-      azure_openai:
-        kind: openai_responses
-        host: "<your-resource>.openai.azure.com"
-        api_path: "/openai/v1/responses"
-        auth_config:
-          secret_ref: "cred://azure-openai-key"
-```
+Each provider entry in `mini-chat.config.providers` can include a `tenant_overrides` map to give specific tenants their own host and/or auth. See the commented examples in `config/mini-chat.yaml`.
 
 ## API
 
@@ -72,7 +59,7 @@ Base URL: `http://127.0.0.1:8087/mini-chat/v1`
 | GET | `/mini-chat/v1/chats/{id}` | Get a chat |
 | PATCH | `/mini-chat/v1/chats/{id}` | Update a chat |
 | DELETE | `/mini-chat/v1/chats/{id}` | Delete a chat |
-| POST | `/mini-chat/v1/chats/{id}/messages/stream` | Send message (SSE) |
+| POST | `/mini-chat/v1/chats/{id}/messages:stream` | Send message (SSE) |
 | GET | `/mini-chat/v1/chats/{id}/messages` | List messages |
 | PUT | `/mini-chat/v1/chats/{id}/messages/{mid}/reaction` | Set reaction |
 | DELETE | `/mini-chat/v1/chats/{id}/messages/{mid}/reaction` | Remove reaction |
