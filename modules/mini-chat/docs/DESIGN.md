@@ -23,7 +23,7 @@ Long conversations are managed via thread summaries - a Level 1 compression stra
 | `cpt-cf-mini-chat-fr-file-upload` | `p1` | Upload via OAGW -> Files API (OpenAI: `POST /v1/files`; Azure OpenAI: `POST /openai/files`); metadata persisted via infra/storage repositories; file added to the chat's vector store. P1 uses `purpose="assistants"` for both providers (OpenAI also supports `purpose="user_data"`, but we use `assistants` to keep parity and because the files are used with Vector Stores / File Search). |
 | `cpt-cf-mini-chat-fr-image-upload` | `p1` | Image upload via OAGW -> Files API; metadata persisted via infra/storage repositories; NOT added to vector store. Images referenced as multimodal input (file ID) in Responses API calls. Model capability checked before outbound call; defensive `unsupported_media` error if model lacks image support (unreachable under P1 catalog invariant where all models include `VISION_INPUT`). |
 | `cpt-cf-mini-chat-fr-file-search` | `p1` | File Search tool call scoped to the chat's dedicated vector store (identical `file_search` tool on both OpenAI and Azure OpenAI Responses API) |
-| `cpt-cf-mini-chat-fr-web-search` | `p1` | Web Search tool included in Responses API request when explicitly enabled via `web_search.enabled` parameter; provider decides invocation; per-message and per-day call limits enforced; global `disable_web_search` kill switch |
+| `cpt-cf-mini-chat-fr-web-search` | `p1` | Web Search tool included in Responses API request when explicitly enabled via `web_search.enabled` parameter; provider decides invocation; per-turn and per-day call limits enforced; global `disable_web_search` kill switch |
 | `cpt-cf-mini-chat-fr-doc-summary` | `p1` | See **File Upload** sequence ("Generate doc summary" background variant) and `attachments.doc_summary` schema field. `doc_summary` is server-generated asynchronously; never provided by the client. Status polled via `GET /v1/chats/{id}/attachments/{attachment_id}`. |
 | `cpt-cf-mini-chat-fr-thread-summary` | `p1` | Periodic LLM-driven summarization of old messages; summary replaces history in context |
 | `cpt-cf-mini-chat-fr-chat-crud` | `p1` | REST endpoints for create/list/get/update title/delete chats. Get returns metadata + message_count (no embedded messages). |
@@ -300,13 +300,13 @@ Hard caps: token budgets (`max_input_tokens`, `max_output_tokens`) MUST remain c
 | AuditEvent | Structured event emitted to platform `audit_service`: prompt, response, user/tenant, timestamps, policy decisions, usage. Not stored locally.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | QuotaUsage | Per-user usage counters for rate limiting and budget enforcement. Tracks daily and monthly periods per tier in credits. Credits are computed from provider-reported token usage using the model credit multipliers in the policy snapshot. Premium models have stricter limits; standard-tier models have separate, higher limits.                                                                                                                                                                                                                                                  |
 | MessageReaction | A binary like or dislike reaction on an assistant message. One reaction per user per message. Stored for analytics and feedback collection.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ContextPlan | Transient object assembled per request: system prompt, summary, doc summaries, recent messages, user message, retrieval excerpts. Retrieval scope is determined by the Retrieval Scope Precedence rule: `rag_attachment_ids` > document `attachment_ids` > chat-wide (see File Search Retrieval Scope).                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ContextPlan | Transient object assembled per request: system prompt, summary, doc summaries, recent messages, user message, retrieval excerpts. Retrieval always operates over the entire chat vector store (see File Search Retrieval Scope). |
 
 **Relationships**:
 - Chat -> Message: 1..\*
 - Chat -> Attachment: 0..\*
 - Chat -> ThreadSummary: 0..1
-- Message -> Attachment: 0..\* (M:N via `message_attachments` join table; user messages reference attachments from `attachment_ids` — not from `rag_attachment_ids`, which are retrieval-only and do not create `message_attachments` rows)
+- Message -> Attachment: 0..\* (M:N via `message_attachments` join table; user messages reference attachments from `attachment_ids`)
 - Attachment -> ChatVectorStore: belongs to (via chat_id; documents only — images are not indexed)
 - Message -> AuditEvent: 1..1 (each turn emits an audit event to platform `audit_service`)
 - Message -> MessageReaction: 0..1 (per user)
@@ -527,8 +527,9 @@ Covers public API from PRD: `cpt-cf-mini-chat-interface-public-api`
 | `POST` | `/v1/chats/{id}/messages:stream` | Send message, receive SSE stream | stable |
 | `POST` | `/v1/chats/{id}/attachments` | Upload file attachment | stable |
 | `GET` | `/v1/chats/{id}/attachments/{attachment_id}` | Get attachment status and metadata (polling) | stable |
+| `DELETE` | `/v1/chats/{id}/attachments/{attachment_id}` | Delete attachment from chat and retrieval corpus | stable |
 | `GET` | `/v1/chats/{id}/turns/{request_id}` | Get authoritative turn status (read-only) | stable |
-| `POST` | `/v1/chats/{id}/turns/{request_id}:retry` | Retry last turn (new generation) | stable |
+| `POST` | `/v1/chats/{id}/turns/{request_id}/retry` | Retry last turn (new generation) | stable |
 | `PATCH` | `/v1/chats/{id}/turns/{request_id}` | Edit last turn (replace content + regenerate) | stable |
 | `DELETE` | `/v1/chats/{id}/turns/{request_id}` | Delete last turn (soft-delete) | stable |
 | `GET` | `/v1/models` | List models visible to the current user | stable |
@@ -678,7 +679,6 @@ Request body:
   "content": "string",
   "request_id": "uuid (optional — client MAY provide for idempotency; server generates UUID v4 if omitted)",
   "attachment_ids": ["uuid (optional)"],
-  "rag_attachment_ids": ["uuid (optional)"],
   "web_search": { "enabled": false }
 }
 ```
@@ -725,25 +725,24 @@ impl MessageEntity {
 
 `web_search` is an optional object controlling web search for this turn. Defaults to `{ "enabled": false }` when omitted (backward compatible). When `web_search.enabled=true`, the backend includes the `web_search` tool in the provider Responses API request. The provider decides whether to invoke the tool. If the global `disable_web_search` kill switch is active, the request is rejected with HTTP 400 and error code `web_search_disabled` before opening an SSE stream.
 
-`attachment_ids` is an optional list of **attachment IDs** (documents or images) explicitly attached/referenced on the current user message. When the user message is persisted, the association between the message and each referenced attachment is recorded in the `message_attachments` join table (see section 3.7). This is the **single source of truth** for the `attachments` array returned in `GET /v1/chats/{id}/messages` (each entry is an `AttachmentSummary` with `attachment_id`, `kind`, `filename`, `status`, `img_thumbnail`). Images from `attachment_ids` are included in multimodal model input for the current turn only. Documents from `attachment_ids` serve as both message-level UI associations and explicit retrieval scope for the turn when `rag_attachment_ids` is empty (see Retrieval Scope Precedence below). Previously uploaded image attachments MAY be re-attached on later turns via `attachment_ids`; only explicit re-attachment includes them in multimodal input — images from previous turns are never implicitly reused.
+`attachment_ids` is an optional list of **attachment IDs** (documents or images) explicitly attached/referenced on the current user message. When the user message is persisted, the association between the message and each referenced attachment is recorded in the `message_attachments` join table (see section 3.7). This is the **single source of truth** for the `attachments` array returned in `GET /v1/chats/{id}/messages` (each entry is an `AttachmentSummary` with `attachment_id`, `kind`, `filename`, `status`, `img_thumbnail`). Images from `attachment_ids` are included in multimodal model input for the current turn only. Previously uploaded image attachments MAY be re-attached on later turns via `attachment_ids`; only explicit re-attachment includes them in multimodal input — images from previous turns are never implicitly reused. `attachment_ids` records the association between messages and attachments for UI/audit/history purposes. In P1, `attachment_ids` does **not** scope or filter retrieval — retrieval always operates over the entire chat vector store when document attachments exist in the chat (see Retrieval Model below).
 
-`rag_attachment_ids` is an optional list of **document attachment IDs** that constrain file-search scope for the current turn only. These are request-local retrieval controls and MUST NOT create `message_attachments` rows. They MUST NOT appear in the message `attachments` array in API responses. They MUST NOT imply that the attachment was uploaded on the current turn. Every entry MUST reference an attachment with `attachment_kind=document`; image attachments MUST be rejected. Omitted `rag_attachment_ids` and empty `rag_attachment_ids: []` are semantically equivalent.
+**Retrieval Model (normative)**:
 
-**Retrieval Scope Precedence (normative, deterministic)**:
+Retrieval behavior depends on the attachment state of the chat and the current message:
 
-1. If `rag_attachment_ids` is non-empty, it MUST define the retrieval scope for the turn.
-2. Else, if `attachment_ids` contains document attachments, those document attachments MUST define the retrieval scope for the turn.
-3. Else, retrieval scope defaults to all ready document attachments in the chat.
+1. **No attachments in the chat** — The backend does NOT include `file_search` in Responses API calls. No vector store exists for the chat, so retrieval is unavailable.
 
-The backend MAY include the provider `file_search` tool only when the chat has at least one ready document attachment. When included, the retrieval scope follows the precedence above. The provider/model decides whether to actually invoke the tool.
+2. **Chat has ready document attachments** — The backend includes `file_search` referencing the chat vector store without metadata filtering. Retrieval always operates over all documents currently present in the chat vector store. The LLM decides whether to invoke `file_search`. The `attachment_ids` field on the message does not affect retrieval scope in P1.
 
-**Image input scope invariant (P1)**: Image attachments affect model input only on the turn where they are explicitly included in `attachment_ids`. Uploading an image to the chat does not make it part of future model context by default. Previously uploaded images MAY be reused on later turns only via explicit re-attachment in `attachment_ids`. Images are never allowed in `rag_attachment_ids`.
+> **P2 (deferred)**: Attachment-scoped retrieval — when `attachment_ids` includes document attachments, retrieval is restricted to those documents via metadata filtering on `attachment_id`.
+
+**Image input scope invariant (P1)**: Image attachments affect model input only on the turn where they are explicitly included in `attachment_ids`. Uploading an image to the chat does not make it part of future model context by default. Previously uploaded images MAY be reused on later turns only via explicit re-attachment in `attachment_ids`. Images are never indexed into the vector store.
 
 **P1 attachment scenarios**:
 
-- **Scenario A — upload + attach on this turn**: User uploads a file via `POST /v1/chats/{id}/attachments`, then sends the attachment ID in `attachment_ids`. Result: `message_attachments` row created; file appears in the message `attachments` array; if image, included in multimodal input; if document, defines retrieval scope for the turn (when `rag_attachment_ids` is empty).
-- **Scenario B — explicit retrieval-only reference**: User references previously uploaded document(s) (e.g., via a UI `@file` picker). UI resolves selections to chat-local `attachment_id` values and sends them in `rag_attachment_ids`. Result: NO `message_attachments` rows; NO UI attachment association; file_search scope is restricted to those document attachments only.
-- **Scenario C — implicit retrieval over the chat**: User sends a message without `rag_attachment_ids` and without documents in `attachment_ids`. If the chat has ready document attachments, the backend MAY include the `file_search` tool for the chat's vector store. Retrieval scope defaults to all ready document attachments in the chat.
+- **Scenario A — upload + attach on this turn**: User uploads a file via `POST /v1/chats/{id}/attachments`, then sends the attachment ID in `attachment_ids`. Result: `message_attachments` row created; file appears in the message `attachments` array; if image, included in multimodal input; if document, already indexed in the chat vector store and retrieval operates over the entire chat vector store (no per-document filtering in P1).
+- **Scenario B — retrieval over the chat**: User sends a message (with or without document attachments in `attachment_ids`). If the chat has ready document attachments, the backend includes the `file_search` tool with the chat vector store. Retrieval covers all documents in the chat. If the chat has no document attachments at all, `file_search` is not included.
 
 **P1 intentionally NOT supported** (out of scope):
 - Resolving filename references from free-form user text (e.g., "that contract PDF")
@@ -751,7 +750,7 @@ The backend MAY include the provider `file_search` tool only when the chat has a
 - Multilingual filename or entity resolution
 - Hidden helper LLM call to infer intended file(s) from message text
 
-Validation MUST ensure all of the following for each `attachment_id` in **both** `attachment_ids` and `rag_attachment_ids`:
+Validation MUST ensure all of the following for each `attachment_id` in `attachment_ids`:
 
 - `attachments.tenant_id` matches the request security context tenant
 - `attachments.uploaded_by_user_id` matches the user who uploads attachment
@@ -760,21 +759,17 @@ Validation MUST ensure all of the following for each `attachment_id` in **both**
 - `attachments.status == ready`
 
 Additionally:
-- For each `attachment_id` in `rag_attachment_ids`: `attachments.attachment_kind` MUST equal `document`. Image attachments MUST be rejected.
-- Each array MUST contain unique attachment IDs. Duplicate IDs within `attachment_ids` or within `rag_attachment_ids` MUST be rejected with HTTP 400 (`invalid_request`) before quota reserve and before any provider call.
-- The same attachment ID MUST NOT appear in both `attachment_ids` and `rag_attachment_ids` in the same request. Such requests MUST be rejected with HTTP 400 (`invalid_request`) before quota reserve and before any provider call.
+- Each array MUST contain unique attachment IDs. Duplicate IDs within `attachment_ids` MUST be rejected with HTTP 400 (`invalid_request`) before quota reserve and before any provider call.
 
 ##### Attachment Preflight Validation Invariant (P1)
 
-Attachment validation MUST occur before any provider request is issued and before any quota reserve is taken. For each `attachment_id` in **both** `attachment_ids` and `rag_attachment_ids`:
+Attachment validation MUST occur before any provider request is issued and before any quota reserve is taken. For each `attachment_id` in `attachment_ids`:
 
 - It MUST belong to the same `tenant_id` as the request security context.
 - It MUST belong to the same `user_id` as the request security context.
 - It MUST belong to the same `chat_id` as the requested chat.
 - `status` MUST equal `ready`.
-- For `rag_attachment_ids` only: `attachment_kind` MUST equal `document`.
 - Each array MUST contain unique attachment IDs (no duplicates within a single array).
-- No attachment ID may appear in both arrays simultaneously.
 
 If any of the above validations fail, the request MUST be rejected with an appropriate error before any provider call or quota reserve. No `attachment_id` validation may rely on provider-side failure.
 
@@ -972,7 +967,7 @@ data: {"code": "quota_exceeded", "message": "Daily limit reached", "quota_scope"
 |-------|------|-------------|
 | `code` | string | Canonical error code (see table below). |
 | `message` | string | Human-readable description. |
-| `quota_scope` | `"tokens"` \| `"uploads"` \| `"web_search"` | **Required** when `code = "quota_exceeded"`; MUST be absent otherwise. Clients MUST use this field, not `message` parsing, to determine quota scope. |
+| `quota_scope` | `"tokens"` \| `"uploads"` \| `"web_search"` \| `"image_inputs"` | **Required** when `code = "quota_exceeded"`; MUST be absent otherwise. Clients MUST use this field, not `message` parsing, to determine quota scope. |
 
 ##### `event: ping`
 
@@ -1006,7 +1001,7 @@ A well-formed stream follows this ordering:
 **P1 normative ordering**:
 
 ```text
-ping*  delta*  tool*  citations?  (done | error)
+ping*  (delta | tool)*  citations?  (done | error)
 ```
 
 - Zero or more `ping` events may appear at any point before terminal.
@@ -1073,7 +1068,7 @@ For streaming endpoints, failures before any streaming begins MUST be returned a
 | `chat_not_found` | 404 | Chat does not exist or not accessible under current authorization constraints |
 | `generation_in_progress` | 409 | A generation is already running for this chat (one running turn per chat policy). Always pre-stream JSON. |
 | `request_id_conflict` | 409 | The same `(chat_id, request_id)` is already in a non-replayable state (`running`, `failed`, or `cancelled`). Always pre-stream JSON. |
-| `quota_exceeded` | 429 | Quota exhaustion. Always accompanied by a `quota_scope` field: `"tokens"` (token rate limits across all tiers exhausted, emergency flags, or all models disabled), `"uploads"` (daily upload quota exceeded for the attachment endpoint), or `"web_search"` (per-user daily web search call quota exhausted). |
+| `quota_exceeded` | 429 | Quota exhaustion. Always accompanied by a `quota_scope` field: `"tokens"` (token rate limits across all tiers exhausted, emergency flags, or all models disabled), `"uploads"` (daily upload quota exceeded for the attachment endpoint), `"web_search"` (per-user daily web search call quota exhausted), or `"image_inputs"` (per-turn or per-day image input limit exceeded). |
 | `web_search_disabled` | 400 | Request includes `web_search.enabled=true` but the global `disable_web_search` kill switch is active |
 | `rate_limited` | 429 | Provider upstream throttling (provider 429 after OAGW retry exhaustion) |
 | `file_too_large` | 413 | Uploaded file exceeds size limit |
@@ -1084,13 +1079,14 @@ For streaming endpoints, failures before any streaming begins MUST be returned a
 | `model_not_found` | 404 | Model does not exist in the catalog or is globally disabled. Used by `GET /v1/models/{model_id}`. |
 | `provider_error` | 502 | LLM provider returned an error |
 | `provider_timeout` | 504 | LLM provider request timed out |
-| `web_search_calls_exceeded` | — (SSE only) | Per-message web search tool call limit exceeded mid-turn. Emitted as terminal `event: error` payload only; no HTTP error status is used because the stream is already open. The turn is finalized as `failed` with `settlement_method="actual"\|"estimated"`. |
+| `web_search_calls_exceeded` | — (SSE only) | Per-turn web search tool call limit exceeded mid-turn. Emitted as terminal `event: error` payload only; no HTTP error status is used because the stream is already open. The turn is finalized as `failed` with `settlement_method="actual"\|"estimated"`. |
 | `invalid_turn_state` | 400 | Retry, edit, or delete attempted on a turn that is not in a terminal state (turn is `running`). Always pre-stream JSON. |
 | `not_latest_turn` | 409 | Retry, edit, or delete targeted a turn that is not the most recent non-deleted turn for the chat. Always pre-stream JSON. |
+| `attachment_locked` | 409 | Attachment is referenced by a submitted message and cannot be deleted. Always pre-stream JSON. |
 | `message_not_found` | 404 | Target message does not exist or is not accessible. Used by reaction endpoints. Always pre-stream JSON. |
 | `invalid_reaction_target` | 400 | Reaction attempted on a message type that does not support reactions (e.g., system messages). Always pre-stream JSON. |
 
-**Quota error disambiguation invariant**: token quota exhaustion, upload quota exhaustion, and web search quota exhaustion MUST be distinguishable to clients via the stable, machine-readable `quota_scope` field on every `quota_exceeded` error response. Clients MUST NOT parse the `message` string to determine quota scope. The `quota_scope` field is REQUIRED when `code` is `quota_exceeded` and MUST be one of: `"tokens"` (token-based rate limit exhaustion), `"uploads"` (per-user daily upload limit exhaustion), or `"web_search"` (per-user daily web search call limit exhaustion).
+**Quota error disambiguation invariant**: token quota exhaustion, upload quota exhaustion, web search quota exhaustion, and image input quota exhaustion MUST be distinguishable to clients via the stable, machine-readable `quota_scope` field on every `quota_exceeded` error response. Clients MUST NOT parse the `message` string to determine quota scope. The `quota_scope` field is REQUIRED when `code` is `quota_exceeded` and MUST be one of: `"tokens"` (token-based rate limit exhaustion), `"uploads"` (per-user daily upload limit exhaustion), `"web_search"` (per-user daily web search call limit exhaustion), or `"image_inputs"` (per-turn or per-day image input limit exhaustion).
 
 #### Models API — **ID**: `cpt-cf-mini-chat-interface-models-api`
 
@@ -1319,13 +1315,13 @@ sequenceDiagram
         AG-->>UI: 400
     end
 
-    Note over CS, DB: Preflight transaction (must commit before provider call): validate attachment_ids + rag_attachment_ids (incl. no duplicates across arrays), persist `messages` (role='user'), persist `message_attachments` (from attachment_ids only; rag_attachment_ids do NOT create message_attachments), insert `chat_turns` (state='running') + quota reserve.
+    Note over CS, DB: Preflight transaction (must commit before provider call): validate attachment_ids, persist `messages` (role='user'), persist `message_attachments` (from attachment_ids), insert `chat_turns` (state='running') + quota reserve.
 
-    Note over CS, OAI: Single provider call per user turn. file_search tool included only if chat has ready document attachments; retrieval scope per precedence rule (rag_attachment_ids > document attachment_ids > chat-wide). web_search included when web_search.enabled=true.
+    Note over CS, OAI: Single provider call per user turn. file_search tool always included when chat has ready document attachments; retrieval scope = entire chat vector store. web_search included when web_search.enabled=true.
 
     CS->>DB: Preflight commit: Persist user msg + message_attachments (attachment_ids only) + chat_turns(running) + quota reserve
 
-    CS->>OG: POST /outbound/llm/responses:stream (tools: file_search if chat has ready docs + optionally web_search; retrieval scope per precedence rule)
+    CS->>OG: POST /outbound/llm/responses:stream (tools: file_search if chat has ready docs + optionally web_search; retrieval scope = entire chat vector store)
     OG->>OAI: Responses API (streaming, tool calling enabled)
     OAI-->>OG: SSE tokens
     OG-->>CS: Token stream
@@ -1734,7 +1730,7 @@ Soft-delete rules:
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-dbtable-message-attachments`
 
-M:N join table linking messages to the attachments explicitly referenced on that message. Populated **only** from `attachment_ids` in the `SendMessage` request body (and when a turn is retried or edited, where attachment associations are copied to the new user message). `rag_attachment_ids` MUST NOT create rows in this table — they are retrieval-only and do not represent message-level associations. This table is the **single source of truth** for the `attachments` array (`AttachmentSummary` objects) returned in `GET /v1/chats/{id}/messages` responses.
+M:N join table linking messages to the attachments explicitly referenced on that message. Populated **only** from `attachment_ids` in the `SendMessage` request body (and when a turn is retried or edited, where attachment associations are copied to the new user message). This table is the **single source of truth** for the `attachments` array (`AttachmentSummary` objects) returned in `GET /v1/chats/{id}/messages` responses.
 
 Writers MUST populate `chat_id` from the parent message's `messages.chat_id` (not from user input), and the composite foreign keys enforce that both referenced rows belong to the same chat.
 
@@ -1957,18 +1953,25 @@ Alternative naming (NOT in P1):
 | Column | Type | Description |
 |--------|------|-------------|
 | id | UUID | Reaction identifier |
+| chat_id | UUID | Owning chat (denormalized for integrity; MUST match the parent message's `messages.chat_id`) |
 | message_id | UUID | Parent message (FK → messages.id) |
 | user_id | UUID | Reacting user |
+| tenant_id | UUID | Owning tenant (denormalized for tenant isolation; MUST match the parent chat's `chats.tenant_id`) |
 | reaction | VARCHAR(16) | `like` or `dislike` |
 | created_at | TIMESTAMPTZ | Reaction creation time |
 
 **PK**: `id`
 
-**Constraints**: UNIQUE on `(message_id, user_id)`. NOT NULL on `message_id`, `user_id`, `reaction`, `created_at`. FK `message_id` → `messages.id` ON DELETE CASCADE. CHECK `reaction IN ('like', 'dislike')`.
+**Constraints**:
+- UNIQUE on `(message_id, user_id)`
+- NOT NULL on `chat_id`, `message_id`, `user_id`, `tenant_id`, `reaction`, `created_at`
+- Composite FK `(message_id, chat_id)` → `messages(id, chat_id)` ON DELETE CASCADE (enforces the message belongs to the same chat)
+  - **Implementation note**: this requires `messages` to expose a UNIQUE key on `(id, chat_id)` (in addition to the primary key on `id`) so the composite FK is valid in Postgres/SQLite.
+- CHECK `reaction IN ('like', 'dislike')`
 
-**Indexes**: `(message_id)` for lookups by message
+**Indexes**: `(message_id)` for lookups by message; `(chat_id)` for chat-scoped cleanup
 
-**Secure ORM**: No independent `#[secure]` — accessed through parent chat. The reaction endpoints require the message's parent chat to be loaded via a scoped query first (same pattern as messages, attachments, and chat_turns).
+**Secure ORM**: No independent `#[secure]` — accessed through parent chat. The reaction endpoints require the message's parent chat to be loaded via a scoped query first (same pattern as messages, attachments, and chat_turns). Writers MUST populate `chat_id` and `tenant_id` from the parent message's resolved chat (not from user input).
 
 #### Projection Table: tenant_closure
 
@@ -2047,8 +2050,9 @@ The authorized resource for the Models API is **Model**. This is a read-only, ca
 | `POST /v1/chats/{id}/messages:stream` | `send_message` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `POST /v1/chats/{id}/attachments` | `upload_attachment` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `GET /v1/chats/{id}/attachments/{attachment_id}` | `read_attachment` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
+| `DELETE /v1/chats/{id}/attachments/{attachment_id}` | `delete_attachment` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `GET /v1/chats/{id}/turns/{request_id}` | `read_turn` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
-| `POST /v1/chats/{id}/turns/{request_id}:retry` | `retry_turn` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
+| `POST /v1/chats/{id}/turns/{request_id}/retry` | `retry_turn` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `PATCH /v1/chats/{id}/turns/{request_id}` | `edit_turn` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `DELETE /v1/chats/{id}/turns/{request_id}` | `delete_turn` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `PUT /v1/chats/{id}/messages/{msg_id}/reaction` | `set_reaction` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
@@ -2057,7 +2061,7 @@ The authorized resource for the Models API is **Model**. This is a read-only, ca
 | `GET /v1/models/{model_id}` | `read` | absent | `false` | decision only (no constraints) |
 
 **Notes**:
-- `list_messages`, `send_message`, `upload_attachment`, `read_attachment`, `retry_turn`, `edit_turn`, `delete_turn`, `set_reaction`, and `delete_reaction` are actions on the Chat resource, not on Message or Turn sub-resources. The `resource.id` is the chat's ID.
+- `list_messages`, `send_message`, `upload_attachment`, `read_attachment`, `delete_attachment`, `retry_turn`, `edit_turn`, `delete_turn`, `set_reaction`, and `delete_reaction` are actions on the Chat resource, not on Message or Turn sub-resources. The `resource.id` is always the chat's ID (`chat_id`). Sub-resource identifiers (`request_id`, `attachment_id`, `msg_id`) are child identifiers used for lookups within the chat but are **not independently protected** — authorization is anchored to the parent chat resource.
 - For streaming (`send_message`, `retry_turn`, `edit_turn`), authorization is evaluated once at SSE connection establishment. The entire streaming session operates under the initial authorization decision. No per-message re-authorization.
 - For `create`, the PEP passes `resource.properties.owner_tenant_id` and `resource.properties.user_id` from the SecurityContext. The PDP validates permission without returning constraints.
 - Turn mutation endpoints (`retry_turn`, `edit_turn`, `delete_turn`) additionally enforce latest-turn and terminal-state checks in the domain service after authorization succeeds (see section 3.9).
@@ -2252,7 +2256,7 @@ Mini Chat recognizes the following token scopes for third-party application narr
 |-------|---------|
 | `ai:mini_chat` | All mini-chat operations (umbrella scope) |
 | `ai:mini_chat:read` | `list`, `read`, `list_messages`, `read_attachment`, `read_turn` actions only |
-| `ai:mini_chat:write` | `create`, `update`, `delete`, `send_message`, `upload_attachment`, `retry_turn`, `edit_turn`, `delete_turn`, `set_reaction`, `delete_reaction` actions |
+| `ai:mini_chat:write` | `create`, `update`, `delete`, `send_message`, `upload_attachment`, `delete_attachment`, `retry_turn`, `edit_turn`, `delete_turn`, `set_reaction`, `delete_reaction` actions |
 
 First-party applications (UI) use `token_scopes: ["*"]`. Third-party integrations receive narrowed scopes. Scope enforcement is handled by the PDP - the PEP includes `token_scopes` in the evaluation request context.
 
@@ -2281,8 +2285,8 @@ A turn is a user-message + assistant-response pair identified by `request_id` in
 
 | Operation | Effect |
 |-----------|--------|
-| **Retry** | Soft-deletes the last turn (sets `deleted_at`, sets `replaced_by_request_id` to the new turn's `request_id`). Creates a new turn. The original user message content and attachment associations are re-submitted to the LLM for a new assistant response. Attachment associations are **copied** from the old user message to the new user message via new `message_attachments` rows (the old rows remain on the soft-deleted message for audit). `rag_attachment_ids` are request-local retrieval controls that are NOT persisted and NOT copied; the retry endpoint does not accept `rag_attachment_ids`. Retrieval scope for the retried turn follows the normal precedence rule: if the copied `message_attachments` include documents, those documents define retrieval scope; else, scope defaults to all ready documents in the chat. |
-| **Edit** | Soft-deletes the last turn (sets `deleted_at`, sets `replaced_by_request_id` to the new turn's `request_id`). Creates a new turn with the updated user message content and generates a new assistant response. Attachment associations are **copied** from the old user message to the new user message via new `message_attachments` rows (preserving the same attachments). `rag_attachment_ids` are request-local retrieval controls that are NOT persisted and NOT copied; the edit endpoint does not accept `rag_attachment_ids`. Retrieval scope for the edited turn follows the normal precedence rule based on the copied `message_attachments`. |
+| **Retry** | Soft-deletes the last turn (sets `deleted_at`, sets `replaced_by_request_id` to the new turn's `request_id`). Creates a new turn. The original user message content and attachment associations are re-submitted to the LLM for a new assistant response. Attachment associations are **copied** from the old user message to the new user message via new `message_attachments` rows (the old rows remain on the soft-deleted message for audit). **Deleted attachment handling**: attachments that have been deleted since the original turn are silently excluded from the copy — only non-deleted (`deleted_at IS NULL`) attachments are copied to the new message. Retrieval operates over the entire chat vector store (P1). |
+| **Edit** | Soft-deletes the last turn (sets `deleted_at`, sets `replaced_by_request_id` to the new turn's `request_id`). Creates a new turn with the updated user message content and generates a new assistant response. Attachment associations are **copied** from the old user message to the new user message via new `message_attachments` rows (preserving the same attachments). **Deleted attachment handling**: same as retry — deleted attachments are silently excluded from the copy. |
 | **Delete** | Soft-deletes the last turn (sets `deleted_at`). No new turn is created. |
 
 #### Rules
@@ -2292,13 +2296,14 @@ A turn is a user-message + assistant-response pair identified by `request_id` in
 3. Retry, edit, and delete are allowed only if the target turn is in a terminal state (`completed`, `failed`, or `cancelled`). If the turn is `running`, reject with `400 Bad Request` — the client must wait for completion or cancel by disconnecting the SSE stream (see `cpt-cf-mini-chat-seq-cancellation`).
 4. Retry and edit soft-delete the previous turn (set `deleted_at`) and set `replaced_by_request_id` on the old turn pointing to the new turn's `request_id`. Delete sets `deleted_at` only (no replacement turn). Mutation eligibility considers only non-deleted turns, so delete cannot target an already replaced (soft-deleted) turn.
 5. Soft-deleted turns (`deleted_at IS NOT NULL`) are excluded from active conversation history and context assembly but retained in storage for audit traceability.
-6. **Atomicity invariant (normative)**: The "latest turn" identity check (rule 1), the terminal state check (rule 3), the soft-delete of the old turn, and the INSERT of the new `running` turn MUST all execute within a single DB transaction using `SELECT FOR UPDATE` or equivalent serializable isolation. Without this, two concurrent retry/edit requests for the same turn can both pass the validation checks simultaneously, both soft-delete the old turn (the second soft-delete is a no-op since `deleted_at` is already set), and both attempt to INSERT a new running turn — which violates the `UNIQUE(chat_id) WHERE state = 'running' AND deleted_at IS NULL` index. If the new running turn INSERT fails due to this unique constraint (concurrent race condition), the mutation MUST return `409 Conflict` with `code = "generation_in_progress"` (not HTTP 500).
+6. **New request_id invariant (normative)**: Both retry and edit create a new turn with a **new `request_id`** generated by the **server** (`Uuid::new_v4()`). The client does not provide the new `request_id` — the retry endpoint has no request body, and the edit endpoint body contains only `content`. The server-generated `request_id` is returned to the client via the SSE `event: turn_started` event (same contract as `sendMessage`). The old turn's `replaced_by_request_id` is set to the new `request_id` for audit traceability. The old `request_id` is no longer valid for idempotent replay — the soft-deleted turn is excluded from the replay path (replay requires `deleted_at IS NULL`). Audit events include both `original_request_id` and `new_request_id` (see audit event payloads for `turn_retry` and `turn_edit`).
+7. **Atomicity invariant (normative)**: The "latest turn" identity check (rule 1), the terminal state check (rule 3), the soft-delete of the old turn, and the INSERT of the new `running` turn MUST all execute within a single DB transaction using `SELECT FOR UPDATE` or equivalent serializable isolation. Without this, two concurrent retry/edit requests for the same turn can both pass the validation checks simultaneously, both soft-delete the old turn (the second soft-delete is a no-op since `deleted_at` is already set), and both attempt to INSERT a new running turn — which violates the `UNIQUE(chat_id) WHERE state = 'running' AND deleted_at IS NULL` index. If the new running turn INSERT fails due to this unique constraint (concurrent race condition), the mutation MUST return `409 Conflict` with `code = "generation_in_progress"` (not HTTP 500).
 
 #### Turn Mutation API Contracts
 
 ##### Retry Last Turn
 
-**Endpoint**: `POST /v1/chats/{id}/turns/{request_id}:retry`
+**Endpoint**: `POST /v1/chats/{id}/turns/{request_id}/retry`
 
 **Request body**: none
 
@@ -2309,6 +2314,7 @@ A turn is a user-message + assistant-response pair identified by `request_id` in
 | Code | HTTP Status | Condition |
 |------|-------------|-----------|
 | `not_latest_turn` | 409 | Target `request_id` is not the most recent turn |
+| `generation_in_progress` | 409 | Another turn is already running for this chat (including concurrent retry/edit race — see rule 7) |
 | `invalid_turn_state` | 400 | Turn is not in a terminal state |
 | `insufficient_permissions` | 403 | Turn does not belong to the requesting user |
 | `chat_not_found` | 404 | Chat does not exist or not accessible |
@@ -2369,8 +2375,8 @@ These events are emitted to platform `audit_service` following the same emission
 - Image upload and image-aware chat via multimodal Responses API input (PNG/JPEG/WebP); images stored via Files API, not indexed in vector stores
 - Retry, edit, and delete for the last turn only (tail-only mutation; see section 3.9)
 - Quota enforcement: daily + monthly per user; credit-based rate limits per tier tracked in real-time; credits are computed from provider-reported token usage using model credit multipliers; premium models have stricter limits, standard models have separate, higher limits; when all tiers are exhausted, reject with `quota_exceeded`; image counters enforced separately
-- File Search per-message call limit is configurable per deployment (default: 2 tool calls per message)
-- Web search via provider tooling (Azure Foundry), explicitly enabled per request via `web_search.enabled` parameter; per-message call limit (default: 2) and per-user daily quota (default: 75); global `disable_web_search` kill switch
+- File Search per-turn call limit is configurable per deployment (default: 2 tool calls per turn)
+- Web search via provider tooling (Azure Foundry), explicitly enabled per request via `web_search.enabled` parameter; per-turn call limit (default: 2) and per-user daily quota (default: 75); global `disable_web_search` kill switch
 - Public Models API (`GET /v1/models`, `GET /v1/models/{model_id}`): read-only; returns only globally enabled models from the policy catalog. Catalog sourced from `mini-chat-model-policy-plugin`.
 
 **Deferred to P2+**:
@@ -2382,7 +2388,7 @@ These events are emitted to platform `audit_service` following the same emission
 - Per-workspace vector store aggregation
 - Full conversation history editing (editing/deleting arbitrary historical messages)
 - Thread branching or multi-version conversations
-- Automatic filename/document-reference resolution from free-form user text (P1 requires explicit `rag_attachment_ids` or `attachment_ids` resolved by the UI)
+- Automatic filename/document-reference resolution from free-form user text (P1 requires explicit `attachment_ids` resolved by the UI)
 
 ### Data Classification and Retention (P1)
 
@@ -2430,9 +2436,9 @@ On each user message, the domain service assembles a `ContextPlan` in this norma
 3. **Thread summary** — if exists, replaces older history.
 4. **Document summaries** — short descriptions of attached documents.
 5. **Recent messages** — last N messages not covered by summary (N configurable, default 6-10).
-6. **Retrieval excerpts** — file_search results from the chat's vector store (top-k chunks), scoped by the Retrieval Scope Precedence rule: if `rag_attachment_ids` is non-empty, retrieval is restricted to those documents; else if `attachment_ids` includes documents, retrieval is restricted to those documents; else retrieval covers all ready documents in the chat. Metadata filtering on `attachment_id` is applied when scope is restricted.
+6. **Retrieval excerpts** — file_search results from the chat's vector store (top-k chunks). Retrieval always covers all documents in the chat vector store (no per-document filtering in P1). `file_search` is only included when the chat has at least one ready document attachment.
 7. **User message** — current turn.
-8. **Image attachments** — if the current request includes `attachment_ids` with image entries, include up to N images (configurable, default: 4) in the Responses API input content array. Images are appended to the user message content as `input_image` items with internal `provider_file_id` references (resolved from the `attachments` table; never exposed to clients). Images from previous turns are never implicitly reused; previously uploaded image attachments MAY be re-attached on later turns via `attachment_ids`, and only explicit re-attachment includes them in multimodal input. Images are never allowed in `rag_attachment_ids`.
+8. **Image attachments** — if the current request includes `attachment_ids` with image entries, include up to N images (configurable, default: 4) in the Responses API input content array. Images are appended to the user message content as `input_image` items with internal `provider_file_id` references (resolved from the `attachments` table; never exposed to clients). Images from previous turns are never implicitly reused; previously uploaded image attachments MAY be re-attached on later turns via `attachment_ids`, and only explicit re-attachment includes them in multimodal input. Images are never indexed into the vector store.
 
 **Truncation priority** (when total exceeds `token_budget` — see Context Window Budget constraint): items are dropped in reverse order of priority. Lowest priority is truncated first:
 
@@ -2445,11 +2451,11 @@ On each user message, the domain service assembles a `ContextPlan` in this norma
 | 5 | Document summaries |
 | 6 (truncated first) | Retrieval excerpts |
 
-Image attachments on the current turn are not truncated (they are subject to per-message count limits enforced at upload/preflight, not at context assembly).
+Image attachments on the current turn are not truncated (they are subject to per-turn count limits enforced at upload/preflight, not at context assembly).
 
 **Image context rules** (unchanged): images are referenced by provider file ID, not summarized at P1, not indexed in vector stores. If the effective model does not support image input, the domain service rejects before context assembly (see `cpt-cf-mini-chat-constraint-model-image-capability`).
 
-**Web search tool inclusion**: When `web_search.enabled=true` on the request, the domain service includes the `web_search` tool in the Responses API request alongside `file_search`. The provider decides whether to invoke the tool based on the query. Web search tool inclusion does not affect context assembly order or truncation priority. Web search call limits (per-message and per-day) are enforced by `quota_service` at preflight and committed on turn completion. When the per-user daily web search call quota (`web_search.daily_quota`) is exhausted, `quota_service` MUST reject the request at preflight (before any provider call) with `quota_exceeded` and `quota_scope = "web_search"`. This MUST NOT be reported as `quota_scope = "tokens"`.
+**Web search tool inclusion**: When `web_search.enabled=true` on the request, the domain service includes the `web_search` tool in the Responses API request alongside `file_search`. The provider decides whether to invoke the tool based on the query. Web search tool inclusion does not affect context assembly order or truncation priority. Web search call limits (per-turn and per-day) are enforced by `quota_service` at preflight and committed on turn completion. When the per-user daily web search call quota (`web_search.daily_quota`) is exhausted, `quota_service` MUST reject the request at preflight (before any provider call) with `quota_exceeded` and `quota_scope = "web_search"`. This MUST NOT be reported as `quota_scope = "tokens"`.
 
 #### Context Plan Truncation Algorithm
 
@@ -2516,19 +2522,15 @@ SELECT * FROM messages
 
 The result is reversed to chronological order for ContextPlan assembly. K is a server-side configurable cap (default 6-10) and is not exposed to clients.
 
-### File Search Trigger Heuristics
+### File Search Tool Availability
 
-The backend MAY include the provider `file_search` tool only when the chat has at least one ready document attachment. When included, the Retrieval Scope Precedence rule (see Streaming Contract) determines the candidate document set:
+The `file_search` tool is only provided to the LLM after at least one document attachment has been uploaded and reached `ready` status in the chat. Before any attachments exist, the backend MUST NOT include `file_search` in Responses API calls because no vector store exists for the chat.
 
-1. If `rag_attachment_ids` is non-empty → scope restricted to those documents (metadata filtered).
-2. Else if `attachment_ids` includes documents → scope restricted to those documents (metadata filtered).
-3. Else → scope is the full chat vector store.
+Once document attachments exist, the backend includes the `file_search` tool on every model request with the chat vector store ID attached via `tool_resources.file_search.vector_store_ids`. The provider/model decides whether to actually invoke the tool.
 
-The provider/model decides whether to actually invoke the tool. The explicit scope (cases 1 and 2) deterministically restricts the candidate set; it does not force invocation.
+**P1 constraint**: the backend MUST NOT infer document references from free-form user text. All attachment association is via `attachment_ids`, resolved to `attachment_id` values by the UI before the request is sent.
 
-**P1 constraint**: the backend MUST NOT infer document references from free-form user text. All explicit retrieval scoping is via `rag_attachment_ids` or document entries in `attachment_ids`, resolved to `attachment_id` values by the UI before the request is sent.
-
-Limits: per-message file_search tool call limit is configurable per deployment (default: 2); max calls per day/user tracked in `quota_usage`.
+Limits: per-turn file_search tool call limit is configurable per deployment (default: 2); max calls per day/user tracked in `quota_usage`.
 
 ### Web Search Configuration
 
@@ -2540,13 +2542,13 @@ Web search is an explicitly-enabled tool available when `web_search.enabled=true
 
 ```yaml
 web_search:
-  max_calls_per_message: 2          # hard limit on web_search tool calls per user turn
+  max_calls_per_turn: 2             # hard limit on web_search tool calls per user turn
   daily_quota: 75                    # per-user daily web search call limit
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_calls_per_message` | integer | `2` | Hard limit on web_search tool calls the provider may make per user turn. Enforced by `quota_service` at preflight. |
+| `max_calls_per_turn` | integer | `2` | Hard limit on web_search tool calls the provider may make per user turn. Enforced by `quota_service` at preflight. |
 | `daily_quota` | integer | `75` | Per-user daily web search call limit. Tracked in `quota_usage.web_search_calls`. |
 
 **Deferred to P2+**: `web_search.provider_parameters` (search_depth, max_results, include_answer, include_raw_content, include_images, auto_parameters). P1 uses provider defaults. When implemented, provider_parameters are passed through opaquely to the web search provider on every search tool call.
@@ -2559,7 +2561,7 @@ web_search:
 
 > Use web_search only if the answer cannot be obtained from the provided context or your training data. Never use it for general knowledge questions. At most one web_search call per request.
 
-This instruction is a **soft guideline** appended to the system prompt only when `web_search.enabled=true`. It is not included when web search is disabled. The model MAY exceed the "at most one" suggestion; the system does not enforce it. The **hard limit** is `max_calls_per_message` (default: 2) enforced by `quota_service` at preflight — this is the enforceable backstop that prevents runaway tool calls regardless of model behavior.
+This instruction is a **soft guideline** appended to the system prompt only when `web_search.enabled=true`. It is not included when web search is disabled. The model MAY exceed the "at most one" suggestion; the system does not enforce it. The **hard limit** is `max_calls_per_turn` (default: 2) enforced by `quota_service` at preflight — this is the enforceable backstop that prevents runaway tool calls regardless of model behavior.
 
 **Citations**: Web search results are mapped to `event: citations` items with `source: "web"`, `url`, `title`, and `snippet` fields via the same provider event translation layer used for file_search.
 
@@ -2585,8 +2587,8 @@ Web search quota enforcement follows deterministic preflight checks with no retr
 
 **Mid-Turn Hard Limit Enforcement**:
 
-3. **Per-Message Tool Call Limit**: During turn execution, track web_search tool calls made by the provider.
-   - Hard limit: `max_calls_per_message` (configurable, default: 2)
+3. **Per-Turn Tool Call Limit**: During turn execution, track web_search tool calls made by the provider.
+   - Hard limit: `max_calls_per_turn` (configurable, default: 2)
    - If exceeded mid-turn:
      - Finalize turn as `failed` with `error_code = "web_search_calls_exceeded"` (not `quota_exceeded`)
      - Settle tokens based on actual/estimated usage at that point
@@ -2598,26 +2600,30 @@ Web search quota enforcement follows deterministic preflight checks with no retr
 **Error Codes Summary**:
 - `web_search_disabled` → HTTP 400 (kill switch active)
 - `quota_exceeded` with quota_scope=`"web_search"` → HTTP 429 (daily quota exhausted)
-- `web_search_calls_exceeded` → HTTP 200 + SSE `event: error` (per-message tool call limit breached mid-turn; not HTTP 429; turn finalized as `failed`)
+- `web_search_calls_exceeded` → HTTP 200 + SSE `event: error` (per-turn tool call limit breached mid-turn; not HTTP 429; turn finalized as `failed`)
 
 ### File Search Retrieval Scope
 
 **Physical store**: one dedicated vector store per chat (see `chat_vector_stores` table). Created on first document upload to the chat. All document attachments in a chat are indexed in the same physical vector store. The backend MUST resolve the provider vector store from `(tenant_id, chat_id)` internally. The client MUST NOT send provider `vector_store_id` values; the public API accepts only internal `attachment_id` UUIDs.
 
-**Retrieval scope (P1)**: file search is inherently scoped to the current chat because each chat has its own vector store. No cross-chat document leakage by design. Within a chat, retrieval scope is determined by the Retrieval Scope Precedence rule (normative, deterministic):
+**Retrieval scope**: file search is inherently scoped to the current chat because each chat has its own vector store. No cross-chat document leakage by design. Within a chat, retrieval always covers all documents currently present in the chat vector store (no per-document metadata filtering in P1). Attachment-scoped retrieval via metadata filtering on `attachment_id` is deferred to P2.
 
-1. **Explicit turn-local scope via `rag_attachment_ids`**: If the request includes a non-empty `rag_attachment_ids`, file search MUST be restricted to those document attachments only. The backend applies provider-side metadata filtering using stable `attachment_id` values (indexed as metadata on each chunk — see Vector Store Scope below). Filename text MUST NOT be used as the authoritative retrieval key; `attachment_id` is the stable identity for filtering.
-2. **Explicit document attachments via `attachment_ids`**: Else, if `attachment_ids` includes document attachments, those documents MUST define the retrieval scope for the turn (same metadata filtering mechanism).
-3. **Chat-wide default scope**: Else, retrieval scope defaults to all ready document attachments in the chat (the entire chat vector store).
+### Retrieval Invariants
 
-**P1 constraint**: the backend MUST NOT attempt filename or document-reference resolution from free-form user text. All explicit retrieval scoping is via `rag_attachment_ids` or document entries in `attachment_ids`, resolved by the UI to chat-local `attachment_id` values before the request is sent.
+1. `file_search` MUST NOT be included in Responses API calls before the first document attachment reaches `ready` status in the chat (no vector store exists).
+2. All document attachments are indexed into the chat vector store after upload processing completes.
+3. In P1, `file_search` is always provided without metadata filtering when the chat has ready document attachments. The decision to invoke `file_search` is delegated to the LLM; retrieval searches across all documents in the chat vector store.
+4. Deleting an attachment removes it from both chat metadata and the retrieval corpus.
+5. Image attachments are never indexed into the vector store.
+6. The `attachments` array of a submitted message MUST NOT be modified. An attachment referenced by any submitted message MUST NOT be deleted (see Attachment Mutability and Deletion).
+
+> **P2 (deferred)**: When `attachment_ids` in a user message includes document attachments, retrieval MAY be restricted to those documents via metadata filter on `attachment_id`.
 
 This means:
-- Chat A with documents D1, D2, no explicit scope → file_search queries D1, D2 (Chat A's full vector store)
-- Chat A with `rag_attachment_ids=[D1]` → file_search queries only D1 (metadata-filtered within Chat A's vector store)
-- Chat A with `attachment_ids=[D1]` (document), no `rag_attachment_ids` → file_search queries only D1
-- Chat B with documents D3 → file_search queries only D3 (Chat B's vector store)
-- No metadata filtering needed for cross-chat isolation; metadata filtering is used only for intra-chat turn-local scope restriction
+- Chat with no attachments → `file_search` is NOT included in the Responses API call
+- Chat A with documents D1, D2; any message → `file_search` queries D1, D2 (full chat vector store)
+- Chat B with documents D3 → `file_search` queries only D3 (Chat B's vector store)
+- Cross-chat isolation: each chat has its own dedicated vector store; no metadata filtering needed for tenant/chat isolation
 
 #### Vector Store Scope (P1)
 
@@ -2627,10 +2633,10 @@ One provider-hosted vector store per chat (see `chat_vector_stores` table). Crea
 
 | Metadata field | Source | Purpose |
 |---------------|--------|---------|
-| `attachment_id` | `attachments.id` | Turn-local retrieval filtering (via `rag_attachment_ids` / document `attachment_ids`), cleanup, and deduplication |
+| `attachment_id` | `attachments.id` | Cleanup and deduplication |
 | `uploaded_at` | `attachments.created_at` | Recency bias in retrieval |
 
-Physical and logical isolation are both per chat. No metadata filtering needed for cross-chat isolation. Metadata filtering on `attachment_id` is used only for intra-chat turn-local scope restriction when `rag_attachment_ids` or document `attachment_ids` are present on the request.
+Physical and logical isolation are both per chat. No metadata filtering is needed — each chat has its own dedicated vector store.
 
 **Tenant isolation invariants (normative)**:
 
@@ -2642,14 +2648,88 @@ Physical and logical isolation are both per chat. No metadata filtering needed f
 
 Retrieved file search excerpts are integrated into the prompt as follows:
 
-1. The domain service determines retrieval scope per the Retrieval Scope Precedence rule: if `rag_attachment_ids` is non-empty, restrict to those documents; else if `attachment_ids` includes documents, restrict to those documents; else use the full chat vector store.
-2. The domain service invokes the provider `file_search` tool on the chat's vector store (top-k similarity search), applying `attachment_id` metadata filtering when retrieval scope is restricted.
+1. The domain service uses the chat vector store for retrieval without metadata filtering (P1). All documents in the chat vector store are searchable on every turn.
+2. The domain service invokes the provider `file_search` tool on the chat's vector store (top-k similarity search).
 3. Only the returned chunks are included in the prompt — full file contents are **never** injected by default.
 4. If retrieval returns no relevant chunks, the system proceeds without file context.
 5. Retrieved chunks are subject to the token budget truncation rules in Context Plan Assembly: thread summary and system prompt always have higher priority; retrieval excerpts are truncated first when the budget is exceeded.
 6. Maximum retrieved chunks per turn and maximum retrieved tokens per turn are configurable (see RAG defaults below).
 
-Provider-side retrieval filtering MUST be based on stable `attachment_id` metadata (indexed per chunk), not on filename text. Filename may exist for UI display only.
+#### Citation File ID Resolution
+
+File citations returned by the provider include a provider-specific file identifier (`provider_file_id`) in the annotation payload. Before constructing the client-visible citation object, the backend MUST resolve this provider identifier to the internal `attachment_id` used by the Mini Chat system.
+
+Resolution is performed by a lookup in the `attachments` table:
+
+```
+(chat_id, provider_file_id) → attachment_id
+```
+
+The lookup MUST be restricted to the current `chat_id` to preserve tenant and chat isolation. Raw `provider_file_id` values MUST NOT be exposed in API responses. The citation payload returned to the client MUST contain the internal `attachment_id` only.
+
+**Citation resolution rules**:
+
+1. If a matching attachment row is found and the attachment is not soft-deleted (`deleted_at IS NULL`), the citation MUST include the corresponding `attachment_id`.
+2. If no matching attachment is found (e.g., provider returns an unknown file ID), the citation MUST be omitted from the `citations` event. The backend MUST NOT expose the raw `provider_file_id` to the client.
+3. If the attachment exists but is soft-deleted (`deleted_at IS NOT NULL`), the citation MUST be omitted. The raw provider identifier MUST NOT be returned.
+4. The `attachments` table MUST maintain an index on `(chat_id, provider_file_id)` to ensure deterministic and efficient lookup.
+
+**Provider identifier non-exposure invariant**: provider-specific identifiers (such as `provider_file_id`, `vector_store_id`) are internal integration details and MUST NOT appear in any public API payloads, SSE event payloads, or error messages. See also the normative non-exposure invariant in section 3.3 (SSE Events).
+
+#### Attachment Mutability and Deletion
+
+Attachments may be removed while the message they belong to has not yet been submitted.
+
+Once a message is submitted, its `attachments` array and corresponding `message_attachments` associations become immutable and MUST NOT be modified.
+
+An attachment referenced by any submitted message MUST NOT be deleted.
+
+An attachment that is not referenced by any submitted message MAY be deleted via `DELETE /v1/chats/{chat_id}/attachments/{attachment_id}`.
+
+The deletion guard is based on whether the attachment is referenced by any submitted `message_attachments` association, not merely on whether the attachment exists in the chat.
+
+**Attachment Deletion Invariants**:
+
+1. The `attachments` array of a submitted message MUST NOT be modified.
+2. An attachment referenced by any submitted message MUST NOT be deleted.
+3. An attachment not referenced by any submitted message MAY be deleted.
+4. `DELETE /v1/chats/{chat_id}/attachments/{attachment_id}` MUST return HTTP 409 with `error.code = "attachment_locked"` if the attachment is referenced by any submitted message.
+
+**P1 Limitation**: Attachments referenced by submitted messages are immutable and cannot be deleted. This avoids breaking historical message rendering, attachment references, citations, and replay semantics. Corpus-level deletion of attachments referenced by submitted messages is out of scope for P1.
+
+#### Attachment Deletion
+
+`DELETE /v1/chats/{chat_id}/attachments/{attachment_id}`
+
+This operation deletes the attachment only if it is not referenced by any submitted message.
+
+If the attachment is referenced by one or more submitted messages, the operation MUST be rejected with HTTP 409 Conflict and `error.code = "attachment_locked"`.
+
+If the attachment is not referenced by any submitted message, the attachment is soft-deleted locally and immediately excluded from future retrieval and chat metadata. Provider-side cleanup (file deletion via the Files API and document removal from the vector store) is performed asynchronously via the transactional outbox mechanism. The API response MUST NOT wait for external cleanup to complete.
+
+Deletion follows a two-phase approach using the transactional outbox pattern (see section 5.7):
+
+**Phase 1 — Transactional commit (synchronous, within the HTTP request)**:
+
+1. Soft-delete the `attachments` row (`deleted_at = now()`).
+2. Insert a `modkit_outbox_events` row with `event_type = "attachment_cleanup"` containing `provider_file_id` and `vector_store_id` in the payload.
+3. Both writes execute in a single DB transaction. The endpoint returns `204 No Content` once the transaction commits.
+
+After Phase 1 commits, the attachment is **immediately invisible** to retrieval: the `file_search` tool inclusion check counts only `status = 'ready' AND deleted_at IS NULL` attachments, and vector store queries are scoped to attachments present in `chat_vector_stores` metadata — the soft-deleted attachment is excluded from both paths.
+
+**Phase 2 — Asynchronous cleanup (outbox relay)**:
+
+The outbox relay picks up the `attachment_cleanup` event and performs provider-side cleanup:
+
+1. Remove the document from the chat vector store (provider Vector Stores API).
+2. Delete the file from the provider Files API.
+
+If either provider call fails, the outbox relay retries with exponential backoff (standard outbox retry policy). Partial failure is safe: the attachment is already soft-deleted and excluded from retrieval. Provider-side orphans are eventually cleaned up by retries or by the chat deletion cleanup worker.
+
+**Invariants**:
+
+- After Phase 1, the attachment MUST NOT appear in `file_search` tool resources or retrieval scope.
+- Deleting an already-deleted attachment is idempotent: returns `204 No Content` without inserting a duplicate outbox event.
 
 #### RAG Quality & Scale Controls (P1)
 
@@ -2670,17 +2750,17 @@ All values are configurable per deployment. The domain service enforces `max_doc
 
 Since each chat has a dedicated vector store, these limits directly bound the size of each vector store. The `max_chunks_per_chat` limit (default: 10,000) serves as both a RAG quality control and a vector store growth guardrail. No additional per-user aggregate limit is enforced at P1; operators can monitor total vector store count per user via metrics (`mini_chat_vector_stores_per_user` gauge).
 
-#### File Search Per-Message Call Limit Enforcement (P1)
+#### File Search Per-Turn Call Limit Enforcement (P1)
 
-The file search per-message call limit (`max_calls_per_message`, default: 2) is enforced at **preflight only** in P1.
+The file search per-turn call limit (`max_calls_per_turn`, default: 2) is enforced at **preflight only** in P1.
 
-**Preflight enforcement**: The `file_search_surcharge_tokens` budget included in the reserve estimate covers up to `max_calls_per_message` invocations. No mid-stream monitoring or hard stop is implemented for file_search calls in P1. There is no `file_search_calls_exceeded` error code or mid-turn finalization path for file_search at P1 scope.
+**Preflight enforcement**: The `file_search_surcharge_tokens` budget included in the reserve estimate covers up to `max_calls_per_turn` invocations. No mid-stream monitoring or hard stop is implemented for file_search calls in P1. There is no `file_search_calls_exceeded` error code or mid-turn finalization path for file_search at P1 scope.
 
-**Post-hoc accounting**: After the provider reports actual token usage, the system applies standard commit-vs-reserve settlement regardless of how many file_search calls the provider actually made. If the provider makes fewer calls than budgeted, actual token usage is lower and any underspend is released. If the provider makes more calls than `max_calls_per_message`, the additional token cost is subject to the standard `overshoot_tolerance_factor` cap — overruns beyond tolerance are capped at `reserve_tokens` per §5.4.5. No separate mid-stream enforcement, error_code, or settlement exception applies.
+**Post-hoc accounting**: After the provider reports actual token usage, the system applies standard commit-vs-reserve settlement regardless of how many file_search calls the provider actually made. If the provider makes fewer calls than budgeted, actual token usage is lower and any underspend is released. If the provider makes more calls than `max_calls_per_turn`, the additional token cost is subject to the standard `overshoot_tolerance_factor` cap — overruns beyond tolerance are capped at `reserve_tokens` per §5.4.5. No separate mid-stream enforcement, error_code, or settlement exception applies.
 
-**Rationale**: Unlike web search (which incurs discrete per-call surcharges tracked in a daily quota bucket requiring mid-turn enforcement), file_search surcharge tokens are a fixed per-turn budget estimate baked into the reserve. Enforcement at preflight by sizing the reserve to cover `max_calls_per_message` calls provides sufficient cost bounding without requiring SSE event monitoring. Mid-stream abort on file_search call count exceed (analogous to web search's Mid-Turn Hard Limit Enforcement) is deferred to P2+.
+**Rationale**: Unlike web search (which incurs discrete per-call surcharges tracked in a daily quota bucket requiring mid-turn enforcement), file_search surcharge tokens are a fixed per-turn budget estimate baked into the reserve. Enforcement at preflight by sizing the reserve to cover `max_calls_per_turn` calls provides sufficient cost bounding without requiring SSE event monitoring. Mid-stream abort on file_search call count exceed (analogous to web search's Mid-Turn Hard Limit Enforcement) is deferred to P2+.
 
-**Scope note**: Operators can detect excessive file_search call usage via audit logs. Per-message mid-stream file_search call count enforcement is explicitly out of P1 scope.
+**Scope note**: Operators can detect excessive file_search call usage via audit logs. Per-turn mid-stream file_search call count enforcement is explicitly out of P1 scope.
 
 ### Model Catalog Configuration
 
@@ -2764,7 +2844,7 @@ Operational configuration of rate limits, quota allocations, and model catalog i
 | Credit limit (per tier per period) | Positive integer > 0 |
 | `period_type` | One of: `daily`, `monthly` (P2+: `4h`, `weekly`) |
 | Period status | `enabled` or `disabled` (disabled periods are skipped during tier availability check) |
-| `web_search.max_calls_per_message` | Positive integer > 0 |
+| `web_search.max_calls_per_turn` | Positive integer > 0 |
 | `web_search.daily_quota` | Positive integer > 0 |
 
 Invalid configuration MUST be rejected at startup with a descriptive error. Runtime config reloads that fail validation MUST be rejected without affecting the running configuration.
@@ -2995,7 +3075,7 @@ When image attachments are included in a chat turn, `llm_provider` constructs th
 }
 ```
 
-Multiple images are appended as additional `input_image` items (up to the per-message limit). The `file_id` in this payload is the provider-issued `provider_file_id` resolved internally from the `attachments` table. This identifier is used only in internal provider API calls and MUST NOT be exposed to clients.
+Multiple images are appended as additional `input_image` items (up to the per-turn limit). The `file_id` in this payload is the provider-issued `provider_file_id` resolved internally from the `attachments` table. This identifier is used only in internal provider API calls and MUST NOT be exposed to clients.
 
 This is the normalized internal representation; provider-specific request shaping (if any) is handled by `llm_provider` / OAGW.
 
@@ -3427,7 +3507,7 @@ When a `POST /v1/chats/{id}/messages:stream` request arrives with a `(chat_id, r
 | `failed` | Reject with `409 Conflict` — client MUST use a new `request_id` to retry |
 | `cancelled` | Reject with `409 Conflict` — client MUST use a new `request_id` to retry |
 
-A new `request_id` is required for every retry attempt. The system never overwrites or reuses a turn record.
+A new `request_id` is required for every retry or edit attempt. The client MUST NOT reuse the `request_id` of an existing completed turn — a completed `(chat_id, request_id)` pair is replay-only and will return the previously generated result instead of starting a new generation. The system never overwrites or reuses a turn record.
 
 **Replay Side-Effect-Free Invariant (P1)**:
 
@@ -5132,7 +5212,7 @@ The following patterns are explicitly prohibited. Any implementation that matche
 
 **INVARIANT: user message MUST be durably persisted before the `chat_turns` row enters `running` state and before any outbound provider call.**
 
-The user message (`messages` row with `role = 'user'`) and the `message_attachments` associations (from `attachment_ids` only; `rag_attachment_ids` MUST NOT create `message_attachments` rows) MUST be committed to the database as part of the preflight transaction — the same transaction that inserts the `chat_turns` row with `state = 'running'` and records the quota reserve. This ordering guarantees:
+The user message (`messages` row with `role = 'user'`) and the `message_attachments` associations (from `attachment_ids`) MUST be committed to the database as part of the preflight transaction — the same transaction that inserts the `chat_turns` row with `state = 'running'` and records the quota reserve. This ordering guarantees:
 
 - The user message is always available for ContextPlan assembly and replay, even after crash recovery.
 - If the preflight transaction fails (e.g. DB write error), neither the user message nor the turn record exists — the system is in a clean state and the client can retry with a new `request_id`.
@@ -5370,7 +5450,7 @@ impl TurnErrorCode {
 |------------------------------|-----------------|------------------|---------------------------|-------|
 | `state = 'completed'` | `COMPLETED` | `"completed"` | `"actual"` | Normal success; provider reported full usage |
 | `state = 'failed'` AND `error_code IN ('provider_error', 'provider_timeout', 'rate_limited')` | `FAILED` | `"failed"` | `"actual"` (if provider reported partial usage) OR `"estimated"` (if no usage available) | Provider terminal error after streaming started |
-| `state = 'failed'` AND `error_code = 'web_search_calls_exceeded'` | `FAILED` | `"failed"` | `"actual"` (if provider reported partial usage) OR `"estimated"` (if no usage available) | Per-message tool call limit breached mid-turn; turn was post-provider-start; mirrors `provider_error` settlement. MUST NOT use `"released"` even if partial usage is unavailable — the provider was already called. |
+| `state = 'failed'` AND `error_code = 'web_search_calls_exceeded'` | `FAILED` | `"failed"` | `"actual"` (if provider reported partial usage) OR `"estimated"` (if no usage available) | Per-turn tool call limit breached mid-turn; turn was post-provider-start; mirrors `provider_error` settlement. MUST NOT use `"released"` even if partial usage is unavailable — the provider was already called. |
 | `state = 'failed'` AND `error_code IN ('context_length_exceeded', 'validation_error')` AND reserve was taken | `FAILED` | `"failed"` | `"released"` | Pre-provider failure after reserve; zero charge |
 | `state = 'cancelled'` (client disconnect) | `ABORTED` | `"aborted"` | `"actual"` (if provider reported partial usage) OR `"estimated"` (use deterministic formula) | Stream ended without provider terminal event |
 | `state = 'failed'` AND `error_code = 'orphan_timeout'` (watchdog) | `ABORTED` | `"aborted"` | `"estimated"` (MUST use deterministic formula from section 5.8) | Watchdog cleanup; no provider terminal event received |
@@ -6255,7 +6335,7 @@ Estimation budgets are embedded **per-model** in the policy snapshot catalog. Ea
 | Parameter | Type | Default | Source | Notes |
 |-----------|------|---------|--------|-------|
 | `web_search.enabled` | `bool` | `false` | **Request** | Per-request body field |
-| `web_search.max_calls_per_message` | `integer` | `2` | **ConfigMap** | n/a in CCM API |
+| `web_search.max_calls_per_turn` | `integer` | `2` | **ConfigMap** | n/a in CCM API |
 | `web_search.daily_quota` | `integer` | `75` | **ConfigMap** | n/a in CCM API |
 | `disable_web_search` (kill switch) | `bool` | — | **CCM API**: `GET /policies/{v}` | `snapshot.kill_switches.disable_web_search` |
 
@@ -6263,7 +6343,7 @@ Estimation budgets are embedded **per-model** in the policy snapshot catalog. Ea
 
 | Parameter | Type | Default | Source |
 |-----------|------|---------|--------|
-| `file_search.max_calls_per_message` | `integer` | `2` | **ConfigMap** |
+| `file_search.max_calls_per_turn` | `integer` | `2` | **ConfigMap** |
 | `max_documents_per_chat` | `integer` | `50` | **ConfigMap** |
 | `max_total_upload_mb_per_chat` | `integer` | `100` | **ConfigMap** |
 | `max_chunks_per_chat` | `integer` | `10_000` | **ConfigMap** |
@@ -6279,9 +6359,9 @@ Estimation budgets are embedded **per-model** in the policy snapshot catalog. Ea
 | `uploaded_file_max_size_kb` | `integer` | — | **ConfigMap** |
 | `uploaded_image_max_size_kb` | `integer` | — | **ConfigMap** |
 | Max image size | — | `16 MiB` (target `25 MiB`) | **ConfigMap** |
-| `max_image_inputs_per_message` | `integer` | `4` | **ConfigMap** |
+| `max_images_per_message` | `integer` | `4` | **ConfigMap** |
 | `max_image_inputs_per_user_per_day` | `integer` | `50` | **ConfigMap** |
-| `max_total_image_bytes_per_message` | — | uncapped | **ConfigMap** |
+| `max_total_image_bytes_per_turn` | — | uncapped | **ConfigMap** |
 | `thumbnail_width` | `integer` | `128` | **ConfigMap** |
 | `thumbnail_height` | `integer` | `128` | **ConfigMap** |
 | `thumbnail_max_bytes` | `integer` | `131072` | **ConfigMap** |
