@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use mini_chat_sdk::{
     MiniChatModelPolicyPluginClientV1, MiniChatModelPolicyPluginError, PolicySnapshot,
-    PolicyVersionInfo, PublishError, UsageEvent, UserLimits,
+    PolicyVersionInfo, PublishError, UsageEvent, UserLicenseStatus, UserLimits,
 };
 use time::OffsetDateTime;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -14,6 +15,7 @@ impl MiniChatModelPolicyPluginClientV1 for Service {
     async fn get_current_policy_version(
         &self,
         user_id: Uuid,
+        _cancel: CancellationToken,
     ) -> Result<PolicyVersionInfo, MiniChatModelPolicyPluginError> {
         Ok(PolicyVersionInfo {
             user_id,
@@ -26,6 +28,7 @@ impl MiniChatModelPolicyPluginClientV1 for Service {
         &self,
         user_id: Uuid,
         policy_version: u64,
+        _cancel: CancellationToken,
     ) -> Result<PolicySnapshot, MiniChatModelPolicyPluginError> {
         if policy_version != 1 {
             return Err(MiniChatModelPolicyPluginError::NotFound);
@@ -42,6 +45,7 @@ impl MiniChatModelPolicyPluginClientV1 for Service {
         &self,
         user_id: Uuid,
         policy_version: u64,
+        _cancel: CancellationToken,
     ) -> Result<UserLimits, MiniChatModelPolicyPluginError> {
         if policy_version != 1 {
             return Err(MiniChatModelPolicyPluginError::NotFound);
@@ -55,7 +59,20 @@ impl MiniChatModelPolicyPluginClientV1 for Service {
         })
     }
 
-    async fn publish_usage(&self, payload: UsageEvent) -> Result<(), PublishError> {
+    async fn check_user_license(
+        &self,
+        _user_id: Uuid,
+        _cancel: CancellationToken,
+    ) -> Result<UserLicenseStatus, MiniChatModelPolicyPluginError> {
+        // Static plugin assumes all users are licensed.
+        Ok(UserLicenseStatus { active: true })
+    }
+
+    async fn publish_usage(
+        &self,
+        payload: UsageEvent,
+        _cancel: CancellationToken,
+    ) -> Result<(), PublishError> {
         debug!(
             turn_id = %payload.turn_id,
             tenant_id = %payload.tenant_id,
@@ -94,6 +111,7 @@ mod tests {
             provider_display_name: "Default".to_owned(),
             icon: String::new(),
             tier,
+            system_prompt: None,
             enabled: true,
             multimodal_capabilities: vec![],
             context_window: 128_000,
@@ -187,13 +205,20 @@ mod tests {
         )
     }
 
+    fn token() -> CancellationToken {
+        CancellationToken::new()
+    }
+
     // ── get_current_policy_version ──
 
     #[tokio::test]
     async fn policy_version_echoes_user_id() {
         let svc = test_service();
         let user_id = Uuid::new_v4();
-        let info = svc.get_current_policy_version(user_id).await.unwrap();
+        let info = svc
+            .get_current_policy_version(user_id, token())
+            .await
+            .unwrap();
 
         assert_eq!(info.user_id, user_id);
         assert_eq!(info.policy_version, 1);
@@ -204,7 +229,7 @@ mod tests {
         let before = OffsetDateTime::now_utc();
         let svc = test_service();
         let info = svc
-            .get_current_policy_version(Uuid::new_v4())
+            .get_current_policy_version(Uuid::new_v4(), token())
             .await
             .unwrap();
         let after = OffsetDateTime::now_utc();
@@ -219,7 +244,7 @@ mod tests {
     async fn snapshot_version_1_returns_catalog() {
         let svc = test_service();
         let user_id = Uuid::new_v4();
-        let snap = svc.get_policy_snapshot(user_id, 1).await.unwrap();
+        let snap = svc.get_policy_snapshot(user_id, 1, token()).await.unwrap();
 
         assert_eq!(snap.user_id, user_id);
         assert_eq!(snap.policy_version, 1);
@@ -230,7 +255,9 @@ mod tests {
     async fn snapshot_wrong_version_returns_not_found() {
         let svc = test_service();
         for version in [0, 2, 100, u64::MAX] {
-            let result = svc.get_policy_snapshot(Uuid::new_v4(), version).await;
+            let result = svc
+                .get_policy_snapshot(Uuid::new_v4(), version, token())
+                .await;
             assert!(
                 matches!(result, Err(MiniChatModelPolicyPluginError::NotFound)),
                 "version {version} should return NotFound"
@@ -250,7 +277,10 @@ mod tests {
             cfg.default_standard_limits,
             cfg.default_premium_limits,
         );
-        let snap = svc.get_policy_snapshot(Uuid::new_v4(), 1).await.unwrap();
+        let snap = svc
+            .get_policy_snapshot(Uuid::new_v4(), 1, token())
+            .await
+            .unwrap();
 
         assert!(snap.kill_switches.disable_premium_tier);
         assert!(snap.kill_switches.disable_web_search);
@@ -260,7 +290,10 @@ mod tests {
     #[tokio::test]
     async fn snapshot_contains_both_tiers() {
         let svc = test_service();
-        let snap = svc.get_policy_snapshot(Uuid::new_v4(), 1).await.unwrap();
+        let snap = svc
+            .get_policy_snapshot(Uuid::new_v4(), 1, token())
+            .await
+            .unwrap();
 
         let has_premium = snap
             .model_catalog
@@ -275,13 +308,26 @@ mod tests {
         assert!(has_standard, "catalog must include a standard model");
     }
 
+    // ── check_user_license ──
+
+    #[tokio::test]
+    async fn check_user_license_returns_active() {
+        let svc = test_service();
+        let status = svc
+            .check_user_license(Uuid::new_v4(), token())
+            .await
+            .unwrap();
+
+        assert!(status.active, "static plugin should always return active");
+    }
+
     // ── get_user_limits: version gating ──
 
     #[tokio::test]
     async fn user_limits_version_1_returns_configured_limits() {
         let svc = test_service();
         let user_id = Uuid::new_v4();
-        let limits = svc.get_user_limits(user_id, 1).await.unwrap();
+        let limits = svc.get_user_limits(user_id, 1, token()).await.unwrap();
 
         assert_eq!(limits.user_id, user_id);
         assert_eq!(limits.policy_version, 1);
@@ -296,7 +342,7 @@ mod tests {
     async fn user_limits_wrong_version_returns_not_found() {
         let svc = test_service();
         for version in [0, 2, 100, u64::MAX] {
-            let result = svc.get_user_limits(Uuid::new_v4(), version).await;
+            let result = svc.get_user_limits(Uuid::new_v4(), version, token()).await;
             assert!(
                 matches!(result, Err(MiniChatModelPolicyPluginError::NotFound)),
                 "version {version} should return NotFound"
@@ -316,7 +362,10 @@ mod tests {
             cfg.default_standard_limits,
             cfg.default_premium_limits,
         );
-        let limits = svc.get_user_limits(Uuid::new_v4(), 1).await.unwrap();
+        let limits = svc
+            .get_user_limits(Uuid::new_v4(), 1, token())
+            .await
+            .unwrap();
 
         assert_eq!(limits.standard.limit_daily_credits_micro, 42);
         assert_eq!(limits.premium.limit_monthly_credits_micro, 99);

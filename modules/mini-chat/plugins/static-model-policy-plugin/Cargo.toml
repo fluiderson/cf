@@ -24,6 +24,7 @@ modkit-macros = { workspace = true }
 
 # Async runtime
 async-trait = { workspace = true }
+tokio-util = { workspace = true }
 
 # Data structures
 uuid = { workspace = true }

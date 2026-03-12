@@ -54,6 +54,9 @@ pub struct ModelCatalogEntry {
     pub icon: String,
     /// Model tier (standard or premium).
     pub tier: ModelTier,
+    /// System prompt applied to this model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
     pub enabled: bool,
     /// Multimodal capability flags, e.g. `VISION_INPUT`, `IMAGE_GENERATION`.
     pub multimodal_capabilities: Vec<String>,
@@ -241,6 +244,14 @@ pub enum ModelTier {
     Premium,
 }
 
+/// Whether a user holds an active `CyberChat` license (API: `CheckUserLicenseResponse`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserLicenseStatus {
+    /// `true` if the user's status is `active` in the `active_users` table for this tenant.
+    /// `false` if the user is not found, or has status `invited`, `deactivated`, or `deleted`.
+    pub active: bool,
+}
+
 /// Per-user credit allocations for a specific policy version.
 /// NOT part of the immutable shared `PolicySnapshot` (DESIGN.md §5.2.6).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,6 +338,36 @@ mod tests {
     // The upstream API sends `"type"` not `"config_type"`. If the rename
     // attribute is removed, deserialization from the real API breaks.
 
+    fn sample_catalog_entry() -> ModelCatalogEntry {
+        ModelCatalogEntry {
+            model_id: "test-model".to_owned(),
+            provider_model_id: "test-model-v1".to_owned(),
+            display_name: "Test Model".to_owned(),
+            description: String::new(),
+            version: String::new(),
+            provider_id: "default".to_owned(),
+            provider_display_name: "Default".to_owned(),
+            icon: String::new(),
+            tier: ModelTier::Standard,
+            system_prompt: None,
+            enabled: true,
+            multimodal_capabilities: vec![],
+            context_window: 128_000,
+            max_output_tokens: 16_384,
+            max_input_tokens: 128_000,
+            input_tokens_credit_multiplier_micro: 1_000_000,
+            output_tokens_credit_multiplier_micro: 3_000_000,
+            multiplier_display: "1x".to_owned(),
+            estimation_budgets: EstimationBudgets::default(),
+            max_retrieved_chunks_per_turn: 5,
+            general_config: sample_general_config(),
+            preference: ModelPreference {
+                is_default: false,
+                sort_order: 0,
+            },
+        }
+    }
+
     fn sample_general_config() -> ModelGeneralConfig {
         ModelGeneralConfig {
             config_type: "model.general.v1".to_owned(),
@@ -412,6 +453,50 @@ mod tests {
 
         assert_eq!(deserialized.config_type, original.config_type);
         assert_eq!(deserialized.tier, original.tier);
+    }
+
+    // ── ModelCatalogEntry: system_prompt serde contract ──
+    // `system_prompt` is optional: omitted from JSON when `None`, defaults
+    // to `None` when absent in input. Removing the `#[serde(default,
+    // skip_serializing_if)]` attributes would break the API contract.
+
+    #[test]
+    fn system_prompt_none_omitted_from_json() {
+        let mut entry = sample_catalog_entry();
+        entry.system_prompt = None;
+        let json = serde_json::to_value(&entry).unwrap();
+
+        assert!(
+            json.get("system_prompt").is_none(),
+            "system_prompt must be omitted when None"
+        );
+    }
+
+    #[test]
+    fn system_prompt_absent_in_json_deserializes_to_none() {
+        let mut json = serde_json::to_value(sample_catalog_entry()).unwrap();
+        json.as_object_mut().unwrap().remove("system_prompt");
+
+        let entry: ModelCatalogEntry = serde_json::from_value(json).unwrap();
+        assert!(
+            entry.system_prompt.is_none(),
+            "missing system_prompt must deserialize to None"
+        );
+    }
+
+    #[test]
+    fn system_prompt_some_roundtrips() {
+        let mut entry = sample_catalog_entry();
+        entry.system_prompt = Some("You are a helpful assistant.".to_owned());
+
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["system_prompt"], "You are a helpful assistant.");
+
+        let deserialized: ModelCatalogEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            deserialized.system_prompt.as_deref(),
+            Some("You are a helpful assistant.")
+        );
     }
 
     // ── ModelTier serde representation ──

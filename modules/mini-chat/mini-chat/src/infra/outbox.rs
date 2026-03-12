@@ -123,7 +123,7 @@ impl modkit_db::outbox::MessageHandler for UsageEventHandler {
     async fn handle(
         &self,
         msg: &modkit_db::outbox::OutboxMessage,
-        _cancel: tokio_util::sync::CancellationToken,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> modkit_db::outbox::HandlerResult {
         let event = match serde_json::from_slice::<UsageEvent>(&msg.payload) {
             Ok(e) => e,
@@ -169,7 +169,7 @@ impl modkit_db::outbox::MessageHandler for UsageEventHandler {
             }
         };
 
-        match plugin.publish_usage(event).await {
+        match plugin.publish_usage(event, cancel).await {
             Ok(()) => modkit_db::outbox::HandlerResult::Success,
             Err(PublishError::Transient(reason)) => {
                 warn!(
@@ -278,6 +278,7 @@ mod tests {
         async fn get_current_policy_version(
             &self,
             _user_id: Uuid,
+            _cancel: CancellationToken,
         ) -> Result<PolicyVersionInfo, MiniChatModelPolicyPluginError> {
             unimplemented!("not needed in outbox tests")
         }
@@ -286,6 +287,7 @@ mod tests {
             &self,
             _user_id: Uuid,
             _policy_version: u64,
+            _cancel: CancellationToken,
         ) -> Result<PolicySnapshot, MiniChatModelPolicyPluginError> {
             unimplemented!("not needed in outbox tests")
         }
@@ -294,11 +296,24 @@ mod tests {
             &self,
             _user_id: Uuid,
             _policy_version: u64,
+            _cancel: CancellationToken,
         ) -> Result<UserLimits, MiniChatModelPolicyPluginError> {
             unimplemented!("not needed in outbox tests")
         }
 
-        async fn publish_usage(&self, _payload: UsageEvent) -> Result<(), PublishError> {
+        async fn check_user_license(
+            &self,
+            _user_id: Uuid,
+            _cancel: CancellationToken,
+        ) -> Result<mini_chat_sdk::UserLicenseStatus, MiniChatModelPolicyPluginError> {
+            unimplemented!("not needed in outbox tests")
+        }
+
+        async fn publish_usage(
+            &self,
+            _payload: UsageEvent,
+            _cancel: CancellationToken,
+        ) -> Result<(), PublishError> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             let result = {
                 let guard = self.result.lock().unwrap();

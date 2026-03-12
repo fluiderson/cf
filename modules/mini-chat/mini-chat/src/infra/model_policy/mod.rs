@@ -6,6 +6,7 @@ use mini_chat_sdk::{
 };
 use modkit::client_hub::{ClientHub, ClientScope};
 use modkit::plugins::{GtsPluginSelector, choose_plugin_instance};
+use tokio_util::sync::CancellationToken;
 use types_registry_sdk::{ListQuery, TypesRegistryClient};
 use uuid::Uuid;
 
@@ -20,14 +21,16 @@ pub struct ModelPolicyGateway {
     hub: Arc<ClientHub>,
     vendor: String,
     policy_selector: GtsPluginSelector,
+    cancel: CancellationToken,
 }
 
 impl ModelPolicyGateway {
-    pub(crate) fn new(hub: Arc<ClientHub>, vendor: String) -> Self {
+    pub(crate) fn new(hub: Arc<ClientHub>, vendor: String, cancel: CancellationToken) -> Self {
         Self {
             hub,
             vendor,
             policy_selector: GtsPluginSelector::new(),
+            cancel,
         }
     }
 
@@ -55,11 +58,11 @@ impl ModelPolicyGateway {
     async fn current_snapshot(&self, user_id: Uuid) -> Result<PolicySnapshot, DomainError> {
         let plugin = self.get_policy_plugin().await?;
         let version_info = plugin
-            .get_current_policy_version(user_id)
+            .get_current_policy_version(user_id, self.cancel.clone())
             .await
             .map_err(|e| DomainError::internal(e.to_string()))?;
         plugin
-            .get_policy_snapshot(user_id, version_info.policy_version)
+            .get_policy_snapshot(user_id, version_info.policy_version, self.cancel.clone())
             .await
             .map_err(|e| DomainError::internal(e.to_string()))
     }
@@ -161,7 +164,7 @@ impl PolicySnapshotProvider for ModelPolicyGateway {
     ) -> Result<PolicySnapshot, DomainError> {
         let plugin = self.get_policy_plugin().await?;
         plugin
-            .get_policy_snapshot(user_id, policy_version)
+            .get_policy_snapshot(user_id, policy_version, self.cancel.clone())
             .await
             .map_err(|e| DomainError::internal(e.to_string()))
     }
@@ -169,7 +172,7 @@ impl PolicySnapshotProvider for ModelPolicyGateway {
     async fn get_current_version(&self, user_id: Uuid) -> Result<u64, DomainError> {
         let plugin = self.get_policy_plugin().await?;
         let info = plugin
-            .get_current_policy_version(user_id)
+            .get_current_policy_version(user_id, self.cancel.clone())
             .await
             .map_err(|e| DomainError::internal(e.to_string()))?;
         Ok(info.policy_version)
@@ -185,7 +188,7 @@ impl UserLimitsProvider for ModelPolicyGateway {
     ) -> Result<UserLimits, DomainError> {
         let plugin = self.get_policy_plugin().await?;
         plugin
-            .get_user_limits(user_id, policy_version)
+            .get_user_limits(user_id, policy_version, self.cancel.clone())
             .await
             .map_err(|e| DomainError::internal(e.to_string()))
     }

@@ -127,7 +127,11 @@ impl Module for MiniChatModule {
         let db = Arc::new(db_provider);
 
         // Create the model-policy gateway early for both outbox handler and services.
-        let model_policy_gw = Arc::new(ModelPolicyGateway::new(ctx.client_hub(), vendor));
+        let model_policy_gw = Arc::new(ModelPolicyGateway::new(
+            ctx.client_hub(),
+            vendor,
+            ctx.cancellation_token().clone(),
+        ));
 
         // Start the outbox pipeline eagerly in init() (migrations ran in phase 2, DB is ready).
         // The framework guarantees stop() is called on init failure, so the pipeline

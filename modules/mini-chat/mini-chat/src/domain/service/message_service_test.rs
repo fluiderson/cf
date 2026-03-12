@@ -135,6 +135,9 @@ async fn list_messages_returns_messages_chronologically() {
         .await
         .expect("insert_user_message failed");
 
+    // Ensure distinct created_at timestamps (insert_*_message uses now_utc()).
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+
     message_repo
         .insert_assistant_message(
             &conn,
