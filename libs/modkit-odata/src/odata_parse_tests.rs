@@ -928,11 +928,37 @@ fn or_does_not_capture_and_rhs() {
 }
 
 #[test]
+fn single_char_identifier() {
+    let filter = "x eq 1";
+    let result = parse_str(filter).expect("valid filter tree");
+
+    assert_eq!(
+        result,
+        Expr::Compare(
+            Expr::Identifier("x".to_owned()).into(),
+            Equal,
+            Expr::Value(Value::Number(BigDecimal::from_str("1").unwrap())).into()
+        )
+    );
+}
+
+#[test]
 fn deeply_nested_unmatched_parens_does_not_hang() {
     // Pathological input: unmatched parentheses must fail fast, not consume
     // exponential memory/time due to backtracking.
     let result = parse_str("((((EAEAEAE(((EAEA((AE(((EAEAEEE");
     assert!(result.is_err());
+}
+
+#[test]
+fn datetime_rejects_nonexistent_dst_spring_forward() {
+    use crate::odata_filters::ParseError;
+
+    // 2024-03-10 02:30 does not exist in America/New_York (clocks spring forward
+    // from 02:00 to 03:00), so .earliest() returns None → ParsingDateTime.
+    let filter = "AT eq 2024-03-10T02:30:00America/New_York";
+    let err = parse_str(filter).unwrap_err();
+    assert_eq!(err, ParseError::ParsingDateTime);
 }
 
 #[test]
