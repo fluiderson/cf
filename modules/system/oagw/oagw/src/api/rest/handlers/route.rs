@@ -34,18 +34,9 @@ pub async fn create_route(
 ) -> Result<impl IntoResponse, Problem> {
     let instance = "/oagw/v1/routes";
     let upstream_uuid = parse_gts_id(&req.upstream_id, gts::UPSTREAM_SCHEMA, instance)?;
-    let domain_req = crate::domain::model::CreateRouteRequest {
-        upstream_id: upstream_uuid,
-        match_rules: req.match_rules.into(),
-        plugins: req.plugins.map(Into::into),
-        rate_limit: req.rate_limit.map(Into::into),
-        tags: req.tags,
-        priority: req.priority,
-        enabled: req.enabled,
-    };
     let route = state
         .cp
-        .create_route(&ctx, domain_req)
+        .create_route(&ctx, (upstream_uuid, req).into())
         .await
         .map_err(|e| domain_error_to_problem(e, instance))?;
     Ok((StatusCode::CREATED, Json(to_response(route))))

@@ -994,6 +994,20 @@ impl From<UpdateUpstreamRequest> for domain::UpdateUpstreamRequest {
     }
 }
 
+impl From<(Uuid, CreateRouteRequest)> for domain::CreateRouteRequest {
+    fn from((upstream_id, r): (Uuid, CreateRouteRequest)) -> Self {
+        Self {
+            upstream_id,
+            match_rules: r.match_rules.into(),
+            plugins: r.plugins.map(Into::into),
+            rate_limit: r.rate_limit.map(Into::into),
+            tags: r.tags,
+            priority: r.priority,
+            enabled: r.enabled,
+        }
+    }
+}
+
 impl From<UpdateRouteRequest> for domain::UpdateRouteRequest {
     fn from(r: UpdateRouteRequest) -> Self {
         Self {
