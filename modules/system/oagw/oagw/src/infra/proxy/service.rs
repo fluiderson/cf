@@ -625,16 +625,19 @@ impl DataPlaneService for DataPlaneServiceImpl {
                 }
             })?;
 
-            // Spawn task to forward body stream chunks, then shutdown.
+            // Spawn task to forward body stream chunks with chunked encoding.
             // Enforce max_body_size on the streaming path: signal 413 if exceeded.
+            // Signal abort on stream/write errors so the main select! can fail
+            // fast instead of waiting for the full request timeout.
             let (limit_tx, limit_rx) = tokio::sync::oneshot::channel::<usize>();
+            let (abort_tx, abort_rx) = tokio::sync::oneshot::channel::<String>();
             let body_instance_uri = instance_uri.clone();
             tokio::spawn(async move {
                 let mut total_bytes: usize = 0;
                 let mut exceeded = false;
                 while let Some(chunk) = body_stream.next().await {
                     match chunk {
-                        Ok(bytes) => {
+                        Ok(bytes) if !bytes.is_empty() => {
                             total_bytes = total_bytes.saturating_add(bytes.len());
                             if total_bytes > max_body {
                                 tracing::warn!(
@@ -645,21 +648,47 @@ impl DataPlaneService for DataPlaneServiceImpl {
                                 exceeded = true;
                                 break;
                             }
+                            // Chunked transfer encoding: {size_hex}\r\n{data}\r\n
+                            let chunk_header = format!("{:x}\r\n", bytes.len());
+                            if let Err(e) = client_write.write_all(chunk_header.as_bytes()).await {
+                                tracing::debug!(error = %e, "body stream write error");
+                                let _ = abort_tx.send(format!("body stream write error: {e}"));
+                                return;
+                            }
                             if let Err(e) = client_write.write_all(&bytes).await {
                                 tracing::debug!(error = %e, "body stream write error");
-                                break;
+                                let _ = abort_tx.send(format!("body stream write error: {e}"));
+                                return;
+                            }
+                            if let Err(e) = client_write.write_all(b"\r\n").await {
+                                tracing::debug!(error = %e, "body stream write error");
+                                let _ = abort_tx.send(format!("body stream write error: {e}"));
+                                return;
                             }
                         }
+                        Ok(_) => {} // skip empty chunks
                         Err(e) => {
                             tracing::debug!(error = %e, "body stream chunk error");
-                            break;
+                            let _ = abort_tx.send(format!("body stream read error: {e}"));
+                            return;
                         }
                     }
                 }
                 if exceeded {
                     let _ = limit_tx.send(total_bytes);
+                } else {
+                    // Chunked terminator: signals end-of-body to Pingora.
+                    // Only written after a clean end-of-stream — not after
+                    // write failures or stream errors, where the body is
+                    // incomplete and signalling clean EOF would be wrong.
+                    let _ = client_write.write_all(b"0\r\n\r\n").await;
+                    // Do NOT call shutdown() here — Pingora still needs the
+                    // duplex open to send the response. The chunked terminator
+                    // is sufficient to signal end-of-body. Calling shutdown()
+                    // on the write half of a DuplexStream closes it for the
+                    // peer's read, which can cause Pingora to see EOF before
+                    // it finishes proxying (especially with fast streams).
                 }
-                let _ = client_write.shutdown().await;
             });
 
             // 9. Parse response from the read half, but short-circuit to 413
@@ -678,6 +707,12 @@ impl DataPlaneService for DataPlaneServiceImpl {
                         detail: format!(
                             "streaming request body of {total} bytes exceeds maximum of {max_body} bytes"
                         ),
+                        instance: body_instance_uri,
+                    })
+                }
+                Ok(reason) = abort_rx => {
+                    Err(DomainError::DownstreamError {
+                        detail: format!("streaming request body failed mid-stream: {reason}"),
                         instance: body_instance_uri,
                     })
                 }

@@ -1697,6 +1697,365 @@ async fn proxy_streaming_body_exceeding_limit_returns_413() {
     }
 }
 
+// Body::Stream POST must reach the upstream intact via chunked transfer
+// encoding on the internal Pingora bridge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_streaming_body_post_arrives_intact() {
+    let mut guard = MockGuard::new();
+    guard.mock(
+        "POST",
+        "/v1/upload",
+        MockResponse {
+            status: 200,
+            headers: vec![],
+            body: MockBody::Json(serde_json::json!({"received": true})),
+        },
+    );
+
+    let h = AppHarness::builder().build().await;
+    let ctx = h.security_context().clone();
+
+    let upstream = h
+        .facade()
+        .create_upstream(
+            ctx.clone(),
+            CreateUpstreamRequest::builder(
+                Server {
+                    endpoints: vec![Endpoint {
+                        scheme: Scheme::Http,
+                        host: "127.0.0.1".into(),
+                        port: h.mock_port(),
+                    }],
+                },
+                "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            )
+            .alias("stream-body-test")
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    h.facade()
+        .create_route(
+            ctx.clone(),
+            CreateRouteRequest::builder(
+                upstream.id,
+                MatchRules {
+                    http: Some(HttpMatch {
+                        methods: vec![HttpMethod::Post],
+                        path: guard.path("/v1/upload"),
+                        query_allowlist: vec![],
+                        path_suffix_mode: PathSuffixMode::Disabled,
+                    }),
+                    grpc: None,
+                },
+            )
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    // Build a multi-chunk streaming body (simulates multipart/streaming upload).
+    let chunk_a = bytes::Bytes::from_static(b"hello ");
+    let chunk_b = bytes::Bytes::from_static(b"streamed ");
+    let chunk_c = bytes::Bytes::from_static(b"world");
+    let chunks: Vec<Result<bytes::Bytes, oagw_sdk::body::BoxError>> =
+        vec![Ok(chunk_a), Ok(chunk_b), Ok(chunk_c)];
+    let stream: oagw_sdk::body::BodyStream = Box::pin(futures_util::stream::iter(chunks));
+    let body = Body::Stream(stream);
+
+    let req = http::Request::builder()
+        .method(Method::POST)
+        .uri(format!("/stream-body-test{}/v1/upload", guard.prefix()))
+        .header(http::header::CONTENT_TYPE, "application/octet-stream")
+        .body(body)
+        .unwrap();
+
+    let resp = h.facade().proxy_request(ctx.clone(), req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "streaming POST should succeed"
+    );
+
+    // Verify the upstream mock received the complete, reassembled body.
+    let recorded = guard.recorded_requests().await;
+    assert_eq!(recorded.len(), 1, "expected exactly one recorded request");
+    assert_eq!(
+        recorded[0].body, b"hello streamed world",
+        "upstream must receive the full concatenated streaming body"
+    );
+}
+
+// Empty chunks in a Body::Stream must be silently skipped — writing a
+// zero-length chunk would emit the chunked terminator (0\r\n\r\n) and
+// prematurely end the body.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_streaming_body_with_empty_chunks_succeeds() {
+    let mut guard = MockGuard::new();
+    guard.mock(
+        "POST",
+        "/v1/upload-empty",
+        MockResponse {
+            status: 200,
+            headers: vec![],
+            body: MockBody::Json(serde_json::json!({"received": true})),
+        },
+    );
+
+    let h = AppHarness::builder().build().await;
+    let ctx = h.security_context().clone();
+
+    let upstream = h
+        .facade()
+        .create_upstream(
+            ctx.clone(),
+            CreateUpstreamRequest::builder(
+                Server {
+                    endpoints: vec![Endpoint {
+                        scheme: Scheme::Http,
+                        host: "127.0.0.1".into(),
+                        port: h.mock_port(),
+                    }],
+                },
+                "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            )
+            .alias("stream-empty-chunks")
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    h.facade()
+        .create_route(
+            ctx.clone(),
+            CreateRouteRequest::builder(
+                upstream.id,
+                MatchRules {
+                    http: Some(HttpMatch {
+                        methods: vec![HttpMethod::Post],
+                        path: guard.path("/v1/upload-empty"),
+                        query_allowlist: vec![],
+                        path_suffix_mode: PathSuffixMode::Disabled,
+                    }),
+                    grpc: None,
+                },
+            )
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    // Interleave real chunks with empty ones.
+    let chunks: Vec<Result<bytes::Bytes, oagw_sdk::body::BoxError>> = vec![
+        Ok(bytes::Bytes::new()), // empty — must be skipped
+        Ok(bytes::Bytes::from_static(b"AB")),
+        Ok(bytes::Bytes::new()), // empty — must be skipped
+        Ok(bytes::Bytes::new()), // empty — must be skipped
+        Ok(bytes::Bytes::from_static(b"CD")),
+        Ok(bytes::Bytes::new()), // trailing empty
+    ];
+    let stream: oagw_sdk::body::BodyStream = Box::pin(futures_util::stream::iter(chunks));
+    let body = Body::Stream(stream);
+
+    let req = http::Request::builder()
+        .method(Method::POST)
+        .uri(format!(
+            "/stream-empty-chunks{}/v1/upload-empty",
+            guard.prefix()
+        ))
+        .header(http::header::CONTENT_TYPE, "application/octet-stream")
+        .body(body)
+        .unwrap();
+
+    let resp = h.facade().proxy_request(ctx.clone(), req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "streaming POST with empty chunks should succeed"
+    );
+
+    let recorded = guard.recorded_requests().await;
+    assert_eq!(recorded.len(), 1, "expected exactly one recorded request");
+    assert_eq!(
+        recorded[0].body, b"ABCD",
+        "upstream must receive only the non-empty chunks, concatenated"
+    );
+}
+
+// Single-chunk streaming body (boundary condition).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_streaming_body_single_chunk() {
+    let mut guard = MockGuard::new();
+    guard.mock(
+        "POST",
+        "/v1/upload",
+        MockResponse {
+            status: 200,
+            headers: vec![],
+            body: MockBody::Json(serde_json::json!({"received": true})),
+        },
+    );
+
+    let h = AppHarness::builder().build().await;
+    let ctx = h.security_context().clone();
+
+    let upstream = h
+        .facade()
+        .create_upstream(
+            ctx.clone(),
+            CreateUpstreamRequest::builder(
+                Server {
+                    endpoints: vec![Endpoint {
+                        scheme: Scheme::Http,
+                        host: "127.0.0.1".into(),
+                        port: h.mock_port(),
+                    }],
+                },
+                "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            )
+            .alias("stream-single-chunk")
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    h.facade()
+        .create_route(
+            ctx.clone(),
+            CreateRouteRequest::builder(
+                upstream.id,
+                MatchRules {
+                    http: Some(HttpMatch {
+                        methods: vec![HttpMethod::Post],
+                        path: guard.path("/v1/upload"),
+                        query_allowlist: vec![],
+                        path_suffix_mode: PathSuffixMode::Disabled,
+                    }),
+                    grpc: None,
+                },
+            )
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    let chunks: Vec<Result<bytes::Bytes, oagw_sdk::body::BoxError>> =
+        vec![Ok(bytes::Bytes::from_static(b"single-payload"))];
+    let stream: oagw_sdk::body::BodyStream = Box::pin(futures_util::stream::iter(chunks));
+    let body = Body::Stream(stream);
+
+    let req = http::Request::builder()
+        .method(Method::POST)
+        .uri(format!("/stream-single-chunk{}/v1/upload", guard.prefix()))
+        .header(http::header::CONTENT_TYPE, "application/octet-stream")
+        .body(body)
+        .unwrap();
+
+    let resp = h.facade().proxy_request(ctx.clone(), req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "single-chunk streaming POST should succeed"
+    );
+
+    let recorded = guard.recorded_requests().await;
+    assert_eq!(recorded.len(), 1, "expected exactly one recorded request");
+    assert_eq!(
+        recorded[0].body, b"single-payload",
+        "upstream must receive the single chunk intact"
+    );
+}
+
+// A stream error mid-body sends the cause on the abort channel so the chunked
+// terminator is NOT written.  The main select! receives the reason immediately,
+// returning a DownstreamError without waiting for the request timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_streaming_body_error_mid_stream_does_not_send_terminator() {
+    let mut guard = MockGuard::new();
+    guard.mock(
+        "POST",
+        "/v1/upload-err",
+        MockResponse {
+            status: 200,
+            headers: vec![],
+            body: MockBody::Json(serde_json::json!({"received": true})),
+        },
+    );
+
+    let h = AppHarness::builder().build().await;
+    let ctx = h.security_context().clone();
+
+    let upstream = h
+        .facade()
+        .create_upstream(
+            ctx.clone(),
+            CreateUpstreamRequest::builder(
+                Server {
+                    endpoints: vec![Endpoint {
+                        scheme: Scheme::Http,
+                        host: "127.0.0.1".into(),
+                        port: h.mock_port(),
+                    }],
+                },
+                "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            )
+            .alias("stream-err-test")
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    h.facade()
+        .create_route(
+            ctx.clone(),
+            CreateRouteRequest::builder(
+                upstream.id,
+                MatchRules {
+                    http: Some(HttpMatch {
+                        methods: vec![HttpMethod::Post],
+                        path: guard.path("/v1/upload-err"),
+                        query_allowlist: vec![],
+                        path_suffix_mode: PathSuffixMode::Disabled,
+                    }),
+                    grpc: None,
+                },
+            )
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    // First chunk succeeds, second chunk is an error — triggers the abort channel.
+    let chunks: Vec<Result<bytes::Bytes, oagw_sdk::body::BoxError>> = vec![
+        Ok(bytes::Bytes::from_static(b"partial")),
+        Err(Box::new(std::io::Error::other("simulated stream failure"))),
+    ];
+    let stream: oagw_sdk::body::BodyStream = Box::pin(futures_util::stream::iter(chunks));
+    let body = Body::Stream(stream);
+
+    let req = http::Request::builder()
+        .method(Method::POST)
+        .uri(format!("/stream-err-test{}/v1/upload-err", guard.prefix()))
+        .header(http::header::CONTENT_TYPE, "application/octet-stream")
+        .body(body)
+        .unwrap();
+
+    match h.facade().proxy_request(ctx.clone(), req).await {
+        Err(err) => assert!(
+            matches!(
+                err,
+                oagw_sdk::error::ServiceGatewayError::DownstreamError { .. }
+            ),
+            "expected DownstreamError, got: {err:?}"
+        ),
+        Ok(resp) => panic!(
+            "expected DownstreamError, got response with status {}",
+            resp.status()
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // OAuth2 Client Credentials integration tests
 // ---------------------------------------------------------------------------
