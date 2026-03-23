@@ -28,6 +28,7 @@ pub struct Model {
     pub img_thumbnail_width: Option<i32>,
     pub img_thumbnail_height: Option<i32>,
     #[allow(clippy::struct_field_names)]
+    #[sea_orm(column_type = "String(StringLen::N(1024))", nullable)]
     pub summary_model: Option<String>,
     pub summary_updated_at: Option<OffsetDateTime>,
     pub cleanup_status: Option<String>,

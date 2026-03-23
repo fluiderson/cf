@@ -1,12 +1,12 @@
 use super::types::OutboxError;
 
-/// Maximum queue name length (fits `MySQL` VARCHAR(255) with headroom).
-const MAX_QUEUE_NAME_LEN: usize = 63;
+/// Maximum queue name length (fits VARCHAR(1024) column).
+const MAX_QUEUE_NAME_LEN: usize = 1024;
 
 /// Maximum payload type length.
-const MAX_PAYLOAD_TYPE_LEN: usize = 255;
+const MAX_PAYLOAD_TYPE_LEN: usize = 1024;
 
-/// Validate a queue name: `[a-zA-Z0-9._-]{1,63}`, must start and end with
+/// Validate a queue name: `[a-zA-Z0-9._-]{1,1024}`, must start and end with
 /// alphanumeric.
 pub fn validate_queue_name(name: &str) -> Result<(), OutboxError> {
     if name.is_empty() || name.len() > MAX_QUEUE_NAME_LEN {
@@ -28,7 +28,7 @@ pub fn validate_queue_name(name: &str) -> Result<(), OutboxError> {
     Ok(())
 }
 
-/// Validate a payload type: 1-255 printable ASCII chars (`0x20..=0x7E`).
+/// Validate a payload type: 1-1024 printable ASCII chars (`0x20..=0x7E`).
 pub fn validate_payload_type(payload_type: &str) -> Result<(), OutboxError> {
     if payload_type.is_empty() || payload_type.len() > MAX_PAYLOAD_TYPE_LEN {
         return Err(OutboxError::InvalidPayloadType(payload_type.to_owned()));
@@ -69,8 +69,8 @@ mod tests {
     }
 
     #[test]
-    fn queue_name_63_chars() {
-        let name = "a".repeat(63);
+    fn queue_name_1024_chars() {
+        let name = "a".repeat(1024);
         assert!(validate_queue_name(&name).is_ok());
     }
 
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn queue_name_too_long() {
-        let name = "a".repeat(64);
+        let name = "a".repeat(1025);
         assert!(validate_queue_name(&name).is_err());
     }
 
@@ -136,8 +136,8 @@ mod tests {
     }
 
     #[test]
-    fn payload_type_255_chars() {
-        let pt = "a".repeat(255);
+    fn payload_type_1024_chars() {
+        let pt = "a".repeat(1024);
         assert!(validate_payload_type(&pt).is_ok());
     }
 
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn payload_type_too_long() {
-        let pt = "a".repeat(256);
+        let pt = "a".repeat(1025);
         assert!(validate_payload_type(&pt).is_err());
     }
 
