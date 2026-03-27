@@ -54,7 +54,6 @@ pub fn validate_cors_config(config: &CorsConfig) -> Result<(), DomainError> {
     if config.allow_credentials && config.allowed_origins.iter().any(|o| o == "*") {
         return Err(DomainError::Validation {
             detail: "allow_credentials cannot be true when allowed_origins contains '*'".into(),
-            instance: String::new(),
         });
     }
 
@@ -62,7 +61,6 @@ pub fn validate_cors_config(config: &CorsConfig) -> Result<(), DomainError> {
     if config.max_age > MAX_AGE_LIMIT {
         return Err(DomainError::Validation {
             detail: format!("max_age must not exceed {MAX_AGE_LIMIT} seconds"),
-            instance: String::new(),
         });
     }
 
@@ -77,7 +75,6 @@ pub fn validate_cors_config(config: &CorsConfig) -> Result<(), DomainError> {
                 detail: format!(
                     "invalid origin '{origin}': must be '*' or a valid origin (e.g. https://example.com)"
                 ),
-                instance: String::new(),
             });
         }
     }
@@ -173,13 +170,11 @@ pub fn handle_cors_preflight(
     origin: &str,
     request_method: &str,
     request_headers: &[String],
-    instance: &str,
 ) -> Result<Vec<(String, String)>, DomainError> {
     // 1. Validate origin.
     if !is_origin_allowed(config, origin) {
         return Err(DomainError::CorsOriginNotAllowed {
             origin: origin.to_string(),
-            instance: instance.to_string(),
         });
     }
 
@@ -187,13 +182,11 @@ pub fn handle_cors_preflight(
     let method = CorsHttpMethod::from_str_loose(request_method).ok_or_else(|| {
         DomainError::CorsMethodNotAllowed {
             method: request_method.to_string(),
-            instance: instance.to_string(),
         }
     })?;
     if !config.allowed_methods.contains(&method) {
         return Err(DomainError::CorsMethodNotAllowed {
             method: request_method.to_string(),
-            instance: instance.to_string(),
         });
     }
 
@@ -210,7 +203,6 @@ pub fn handle_cors_preflight(
         if !allowed {
             return Err(DomainError::CorsHeaderNotAllowed {
                 header: header.trim().to_string(),
-                instance: instance.to_string(),
             });
         }
     }
@@ -439,8 +431,7 @@ mod tests {
     #[test]
     fn test_preflight_valid_origin_returns_headers() {
         let config = make_config();
-        let result =
-            handle_cors_preflight(&config, "https://example.com", "GET", &[], "/test").unwrap();
+        let result = handle_cors_preflight(&config, "https://example.com", "GET", &[]).unwrap();
         let origin_header = result
             .iter()
             .find(|(k, _)| k == "access-control-allow-origin")
@@ -454,16 +445,14 @@ mod tests {
     #[test]
     fn test_preflight_invalid_origin_returns_error() {
         let config = make_config();
-        let err =
-            handle_cors_preflight(&config, "https://evil.com", "GET", &[], "/test").unwrap_err();
+        let err = handle_cors_preflight(&config, "https://evil.com", "GET", &[]).unwrap_err();
         assert!(matches!(err, DomainError::CorsOriginNotAllowed { .. }));
     }
 
     #[test]
     fn test_preflight_invalid_method_returns_error() {
         let config = make_config();
-        let err = handle_cors_preflight(&config, "https://example.com", "DELETE", &[], "/test")
-            .unwrap_err();
+        let err = handle_cors_preflight(&config, "https://example.com", "DELETE", &[]).unwrap_err();
         assert!(matches!(err, DomainError::CorsMethodNotAllowed { .. }));
     }
 
@@ -471,8 +460,8 @@ mod tests {
     fn test_preflight_invalid_header_returns_error() {
         let config = make_config();
         let headers = vec!["x-custom-header".to_string()];
-        let err = handle_cors_preflight(&config, "https://example.com", "GET", &headers, "/test")
-            .unwrap_err();
+        let err =
+            handle_cors_preflight(&config, "https://example.com", "GET", &headers).unwrap_err();
         assert!(matches!(err, DomainError::CorsHeaderNotAllowed { .. }));
     }
 

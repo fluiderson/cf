@@ -11,6 +11,7 @@ use uuid::Uuid;
 use super::{ControlPlaneService, DataPlaneService};
 use crate::domain::error::DomainError;
 use crate::domain::model;
+use crate::request_instance::RequestInstance;
 
 /// Facade that implements the public `ServiceGatewayClientV1` trait by
 /// delegating to the internal CP and DP services.
@@ -35,7 +36,9 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
     ) -> Result<oagw_sdk::Upstream, ServiceGatewayError> {
         let internal_req = sdk_create_upstream_to_domain(req);
         let result = self.cp.create_upstream(&ctx, internal_req).await;
-        result.map(upstream_to_sdk).map_err(domain_err_to_sdk)
+        result
+            .map(upstream_to_sdk)
+            .map_err(|err| domain_err_to_sdk(err, None))
     }
 
     async fn get_upstream(
@@ -47,7 +50,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
             .get_upstream(&ctx, id)
             .await
             .map(upstream_to_sdk)
-            .map_err(domain_err_to_sdk)
+            .map_err(|err| domain_err_to_sdk(err, None))
     }
 
     async fn list_upstreams(
@@ -63,7 +66,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
             .list_upstreams(&ctx, &q)
             .await
             .map(|v| v.into_iter().map(upstream_to_sdk).collect())
-            .map_err(domain_err_to_sdk)
+            .map_err(|err| domain_err_to_sdk(err, None))
     }
 
     async fn update_upstream(
@@ -77,7 +80,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
             .update_upstream(&ctx, id, internal_req)
             .await
             .map(upstream_to_sdk)
-            .map_err(domain_err_to_sdk)
+            .map_err(|err| domain_err_to_sdk(err, None))
     }
 
     async fn delete_upstream(
@@ -88,7 +91,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
         self.cp
             .delete_upstream(&ctx, id)
             .await
-            .map_err(domain_err_to_sdk)
+            .map_err(|err| domain_err_to_sdk(err, None))
     }
 
     async fn create_route(
@@ -101,7 +104,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
             .create_route(&ctx, internal_req)
             .await
             .map(route_to_sdk)
-            .map_err(domain_err_to_sdk)
+            .map_err(|err| domain_err_to_sdk(err, None))
     }
 
     async fn get_route(
@@ -113,7 +116,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
             .get_route(&ctx, id)
             .await
             .map(route_to_sdk)
-            .map_err(domain_err_to_sdk)
+            .map_err(|err| domain_err_to_sdk(err, None))
     }
 
     async fn list_routes(
@@ -130,7 +133,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
             .list_routes(&ctx, upstream_id, &q)
             .await
             .map(|v| v.into_iter().map(route_to_sdk).collect())
-            .map_err(domain_err_to_sdk)
+            .map_err(|err| domain_err_to_sdk(err, None))
     }
 
     async fn update_route(
@@ -144,7 +147,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
             .update_route(&ctx, id, internal_req)
             .await
             .map(route_to_sdk)
-            .map_err(domain_err_to_sdk)
+            .map_err(|err| domain_err_to_sdk(err, None))
     }
 
     async fn delete_route(
@@ -155,7 +158,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
         self.cp
             .delete_route(&ctx, id)
             .await
-            .map_err(domain_err_to_sdk)
+            .map_err(|err| domain_err_to_sdk(err, None))
     }
 
     async fn resolve_proxy_target(
@@ -169,7 +172,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
             .resolve_proxy_target(&ctx, alias, method, path)
             .await
             .map(|(u, r)| (upstream_to_sdk(u), route_to_sdk(r)))
-            .map_err(domain_err_to_sdk)
+            .map_err(|err| domain_err_to_sdk(err, None))
     }
 
     async fn proxy_request(
@@ -177,10 +180,12 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
         ctx: SecurityContext,
         req: http::Request<Body>,
     ) -> Result<http::Response<Body>, ServiceGatewayError> {
+        let request_instance = RequestInstance::from_uri(req.uri());
+
         self.dp
-            .proxy_request(ctx, req)
+            .proxy_request(ctx, req, request_instance.clone())
             .await
-            .map_err(domain_err_to_sdk)
+            .map_err(|err| domain_err_to_sdk(err, Some(request_instance)))
     }
 }
 
@@ -188,102 +193,91 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
 // DomainError → ServiceGatewayError
 // ---------------------------------------------------------------------------
 
-fn domain_err_to_sdk(err: DomainError) -> ServiceGatewayError {
+fn domain_err_to_sdk(err: DomainError, instance: Option<RequestInstance>) -> ServiceGatewayError {
+    let instance = instance.map(|value| value.into());
+
     match err {
-        DomainError::NotFound { entity, id } => ServiceGatewayError::NotFound {
+        DomainError::NotFound { entity, id: _ } => ServiceGatewayError::NotFound {
             entity: entity.to_string(),
-            instance: format!("{entity}/{id}"),
+            instance,
         },
-        DomainError::Conflict { detail } => ServiceGatewayError::ValidationError {
-            detail,
-            instance: String::new(),
-        },
-        DomainError::Validation { detail, instance } => {
+        DomainError::Conflict { detail } => {
+            ServiceGatewayError::ValidationError { detail, instance }
+        }
+        DomainError::Validation { detail } => {
             ServiceGatewayError::ValidationError { detail, instance }
         }
         DomainError::UpstreamDisabled { alias } => ServiceGatewayError::UpstreamDisabled {
             detail: format!("upstream '{alias}' is disabled"),
-            instance: String::new(),
+            instance,
         },
         DomainError::Internal { message } => ServiceGatewayError::DownstreamError {
             detail: message,
-            instance: String::new(),
+            instance,
         },
-        DomainError::MissingTargetHost { instance } => {
-            ServiceGatewayError::MissingTargetHost { instance }
-        }
-        DomainError::InvalidTargetHost { instance } => {
-            ServiceGatewayError::InvalidTargetHost { instance }
-        }
-        DomainError::UnknownTargetHost { detail, instance } => {
+        DomainError::MissingTargetHost => ServiceGatewayError::MissingTargetHost { instance },
+        DomainError::InvalidTargetHost => ServiceGatewayError::InvalidTargetHost { instance },
+        DomainError::UnknownTargetHost { detail } => {
             ServiceGatewayError::UnknownTargetHost { detail, instance }
         }
-        DomainError::AuthenticationFailed { detail, instance } => {
+        DomainError::AuthenticationFailed { detail } => {
             ServiceGatewayError::AuthenticationFailed { detail, instance }
         }
-        DomainError::PayloadTooLarge { detail, instance } => {
+        DomainError::PayloadTooLarge { detail } => {
             ServiceGatewayError::PayloadTooLarge { detail, instance }
         }
         DomainError::RateLimitExceeded {
             detail,
-            instance,
             retry_after_secs,
         } => ServiceGatewayError::RateLimitExceeded {
             detail,
             instance,
             retry_after_secs,
         },
-        DomainError::SecretNotFound { detail, instance } => {
+        DomainError::SecretNotFound { detail } => {
             ServiceGatewayError::SecretNotFound { detail, instance }
         }
-        DomainError::DownstreamError { detail, instance } => {
+        DomainError::DownstreamError { detail } => {
             ServiceGatewayError::DownstreamError { detail, instance }
         }
-        DomainError::ProtocolError { detail, instance } => {
+        DomainError::ProtocolError { detail } => {
             ServiceGatewayError::ProtocolError { detail, instance }
         }
-        DomainError::ConnectionTimeout { detail, instance } => {
+        DomainError::ConnectionTimeout { detail } => {
             ServiceGatewayError::ConnectionTimeout { detail, instance }
         }
-        DomainError::RequestTimeout { detail, instance } => {
+        DomainError::RequestTimeout { detail } => {
             ServiceGatewayError::RequestTimeout { detail, instance }
         }
         DomainError::GuardRejected {
             status,
             error_code,
             detail,
-            instance,
         } => ServiceGatewayError::GuardRejected {
             status,
             error_code,
             detail,
             instance,
         },
-        DomainError::CorsOriginNotAllowed {
-            origin, instance, ..
-        } => ServiceGatewayError::Forbidden {
-            detail: format!("CORS origin not allowed: {origin} (instance: {instance})"),
+        DomainError::CorsOriginNotAllowed { origin, .. } => ServiceGatewayError::Forbidden {
+            detail: format!("CORS origin not allowed: {origin}"),
         },
-        DomainError::CorsMethodNotAllowed {
-            method, instance, ..
-        } => ServiceGatewayError::Forbidden {
-            detail: format!("CORS method not allowed: {method} (instance: {instance})"),
+        DomainError::CorsMethodNotAllowed { method, .. } => ServiceGatewayError::Forbidden {
+            detail: format!("CORS method not allowed: {method}"),
         },
-        DomainError::CorsHeaderNotAllowed {
-            header, instance, ..
-        } => ServiceGatewayError::Forbidden {
-            detail: format!("CORS header not allowed: {header} (instance: {instance})"),
+        DomainError::CorsHeaderNotAllowed { header, .. } => ServiceGatewayError::Forbidden {
+            detail: format!("CORS header not allowed: {header}"),
         },
-        DomainError::StreamAborted { detail, instance } => {
+        DomainError::StreamAborted { detail } => {
             ServiceGatewayError::StreamAborted { detail, instance }
         }
-        DomainError::LinkUnavailable { detail, instance } => {
+        DomainError::LinkUnavailable { detail } => {
             ServiceGatewayError::LinkUnavailable { detail, instance }
         }
-        DomainError::CircuitBreakerOpen { detail, instance } => {
+        DomainError::CircuitBreakerOpen { detail } => {
             ServiceGatewayError::CircuitBreakerOpen { detail, instance }
         }
-        DomainError::IdleTimeout { detail, instance } => {
+        DomainError::IdleTimeout { detail } => {
             ServiceGatewayError::IdleTimeout { detail, instance }
         }
         DomainError::PluginNotFound { detail } => ServiceGatewayError::PluginNotFound { detail },
@@ -822,7 +816,7 @@ mod tests {
             entity: "upstream",
             id: Uuid::nil(),
         };
-        let sdk_err = domain_err_to_sdk(err);
+        let sdk_err = domain_err_to_sdk(err, None);
         assert!(matches!(
             sdk_err,
             ServiceGatewayError::NotFound { ref entity, .. } if entity == "upstream"
@@ -833,9 +827,9 @@ mod tests {
     fn domain_err_validation_maps_to_sdk() {
         let err = DomainError::Validation {
             detail: "bad input".into(),
-            instance: "/test".into(),
         };
-        let sdk_err = domain_err_to_sdk(err);
+        let request_instance = RequestInstance::from_trusted("/test");
+        let sdk_err = domain_err_to_sdk(err, Some(request_instance));
         assert!(matches!(
             sdk_err,
             ServiceGatewayError::ValidationError { .. }
@@ -846,10 +840,10 @@ mod tests {
     fn domain_err_rate_limit_maps_to_sdk() {
         let err = DomainError::RateLimitExceeded {
             detail: "too fast".into(),
-            instance: "/api".into(),
             retry_after_secs: Some(30),
         };
-        let sdk_err = domain_err_to_sdk(err);
+        let request_instance = RequestInstance::from_trusted("/api");
+        let sdk_err = domain_err_to_sdk(err, Some(request_instance));
         match sdk_err {
             ServiceGatewayError::RateLimitExceeded {
                 retry_after_secs, ..
@@ -862,9 +856,9 @@ mod tests {
     fn domain_err_timeout_maps_to_sdk() {
         let err = DomainError::RequestTimeout {
             detail: "timed out".into(),
-            instance: "/slow".into(),
         };
-        let sdk_err = domain_err_to_sdk(err);
+        let request_instance = RequestInstance::from_trusted("/slow");
+        let sdk_err = domain_err_to_sdk(err, Some(request_instance));
         assert!(matches!(
             sdk_err,
             ServiceGatewayError::RequestTimeout { .. }

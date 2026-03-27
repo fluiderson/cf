@@ -14,7 +14,7 @@ pub enum DomainError {
     Conflict { detail: String },
 
     #[error("validation: {detail}")]
-    Validation { detail: String, instance: String },
+    Validation { detail: String },
 
     #[error("upstream '{alias}' is disabled")]
     UpstreamDisabled { alias: String },
@@ -23,41 +23,40 @@ pub enum DomainError {
     Internal { message: String },
 
     #[error("target host header required for multi-endpoint upstream")]
-    MissingTargetHost { instance: String },
+    MissingTargetHost,
 
     #[error("invalid target host header format")]
-    InvalidTargetHost { instance: String },
+    InvalidTargetHost,
 
     #[error("{detail}")]
-    UnknownTargetHost { detail: String, instance: String },
+    UnknownTargetHost { detail: String },
 
     #[error("{detail}")]
-    AuthenticationFailed { detail: String, instance: String },
+    AuthenticationFailed { detail: String },
 
     #[error("{detail}")]
-    PayloadTooLarge { detail: String, instance: String },
+    PayloadTooLarge { detail: String },
 
     #[error("{detail}")]
     RateLimitExceeded {
         detail: String,
-        instance: String,
         retry_after_secs: Option<u64>,
     },
 
     #[error("{detail}")]
-    SecretNotFound { detail: String, instance: String },
+    SecretNotFound { detail: String },
 
     #[error("{detail}")]
-    DownstreamError { detail: String, instance: String },
+    DownstreamError { detail: String },
 
     #[error("{detail}")]
-    ProtocolError { detail: String, instance: String },
+    ProtocolError { detail: String },
 
     #[error("{detail}")]
-    ConnectionTimeout { detail: String, instance: String },
+    ConnectionTimeout { detail: String },
 
     #[error("{detail}")]
-    RequestTimeout { detail: String, instance: String },
+    RequestTimeout { detail: String },
 
     /// A guard plugin rejected the request with a specific status and error code.
     #[error("guard rejected: {detail}")]
@@ -65,32 +64,31 @@ pub enum DomainError {
         status: u16,
         error_code: String,
         detail: String,
-        instance: String,
     },
 
     /// CORS: the request origin is not in the allowed origins list.
     #[error("CORS origin not allowed: {origin}")]
-    CorsOriginNotAllowed { origin: String, instance: String },
+    CorsOriginNotAllowed { origin: String },
 
     /// CORS: the preflight request method is not in the allowed methods list.
     #[error("CORS method not allowed: {method}")]
-    CorsMethodNotAllowed { method: String, instance: String },
+    CorsMethodNotAllowed { method: String },
 
     /// CORS: a preflight request header is not in the allowed headers list.
     #[error("CORS header not allowed: {header}")]
-    CorsHeaderNotAllowed { header: String, instance: String },
+    CorsHeaderNotAllowed { header: String },
 
     #[error("{detail}")]
-    StreamAborted { detail: String, instance: String },
+    StreamAborted { detail: String },
 
     #[error("{detail}")]
-    LinkUnavailable { detail: String, instance: String },
+    LinkUnavailable { detail: String },
 
     #[error("{detail}")]
-    CircuitBreakerOpen { detail: String, instance: String },
+    CircuitBreakerOpen { detail: String },
 
     #[error("{detail}")]
-    IdleTimeout { detail: String, instance: String },
+    IdleTimeout { detail: String },
 
     #[error("plugin not found: {detail}")]
     PluginNotFound { detail: String },
@@ -120,7 +118,6 @@ impl DomainError {
     pub fn validation(detail: impl Into<String>) -> Self {
         Self::Validation {
             detail: detail.into(),
-            instance: String::new(),
         }
     }
 

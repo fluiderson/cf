@@ -3,6 +3,7 @@ use http::{HeaderValue, StatusCode};
 use modkit::api::problem::Problem;
 
 use crate::domain::error::DomainError;
+use crate::request_instance::RequestInstance;
 use oagw_sdk::api::ErrorSource;
 
 // ---------------------------------------------------------------------------
@@ -56,8 +57,8 @@ fn gts_type(err: &DomainError) -> &str {
     match err {
         DomainError::Validation { .. } => ERR_VALIDATION,
         DomainError::Conflict { .. } => ERR_CONFLICT,
-        DomainError::MissingTargetHost { .. } => ERR_MISSING_TARGET_HOST,
-        DomainError::InvalidTargetHost { .. } => ERR_INVALID_TARGET_HOST,
+        DomainError::MissingTargetHost => ERR_MISSING_TARGET_HOST,
+        DomainError::InvalidTargetHost => ERR_INVALID_TARGET_HOST,
         DomainError::UnknownTargetHost { .. } => ERR_UNKNOWN_TARGET_HOST,
         DomainError::AuthenticationFailed { .. } => ERR_AUTH_FAILED,
         DomainError::NotFound {
@@ -89,8 +90,8 @@ fn gts_type(err: &DomainError) -> &str {
 fn http_status_code(err: &DomainError) -> StatusCode {
     match err {
         DomainError::Validation { .. }
-        | DomainError::MissingTargetHost { .. }
-        | DomainError::InvalidTargetHost { .. }
+        | DomainError::MissingTargetHost
+        | DomainError::InvalidTargetHost
         | DomainError::UnknownTargetHost { .. } => StatusCode::BAD_REQUEST,
         DomainError::Conflict { .. } => StatusCode::CONFLICT,
         DomainError::AuthenticationFailed { .. } => StatusCode::UNAUTHORIZED,
@@ -127,8 +128,8 @@ fn error_title(err: &DomainError) -> &str {
     match err {
         DomainError::Validation { .. } => "Validation Error",
         DomainError::Conflict { .. } => "Conflict",
-        DomainError::MissingTargetHost { .. } => "Missing Target Host",
-        DomainError::InvalidTargetHost { .. } => "Invalid Target Host",
+        DomainError::MissingTargetHost => "Missing Target Host",
+        DomainError::InvalidTargetHost => "Invalid Target Host",
         DomainError::UnknownTargetHost { .. } => "Unknown Target Host",
         DomainError::AuthenticationFailed { .. } => "Authentication Failed",
         DomainError::NotFound { .. } => "Not Found",
@@ -154,73 +155,25 @@ fn error_title(err: &DomainError) -> &str {
     }
 }
 
-fn error_instance(err: &DomainError) -> &str {
-    match err {
-        DomainError::Validation { instance, .. }
-        | DomainError::MissingTargetHost { instance, .. }
-        | DomainError::InvalidTargetHost { instance, .. }
-        | DomainError::UnknownTargetHost { instance, .. }
-        | DomainError::AuthenticationFailed { instance, .. }
-        | DomainError::PayloadTooLarge { instance, .. }
-        | DomainError::RateLimitExceeded { instance, .. }
-        | DomainError::SecretNotFound { instance, .. }
-        | DomainError::DownstreamError { instance, .. }
-        | DomainError::ProtocolError { instance, .. }
-        | DomainError::ConnectionTimeout { instance, .. }
-        | DomainError::RequestTimeout { instance, .. }
-        | DomainError::GuardRejected { instance, .. }
-        | DomainError::CorsOriginNotAllowed { instance, .. }
-        | DomainError::CorsMethodNotAllowed { instance, .. }
-        | DomainError::CorsHeaderNotAllowed { instance, .. }
-        | DomainError::StreamAborted { instance, .. }
-        | DomainError::LinkUnavailable { instance, .. }
-        | DomainError::CircuitBreakerOpen { instance, .. }
-        | DomainError::IdleTimeout { instance, .. } => instance,
-        DomainError::NotFound { .. }
-        | DomainError::Conflict { .. }
-        | DomainError::UpstreamDisabled { .. }
-        | DomainError::Internal { .. }
-        | DomainError::PluginNotFound { .. }
-        | DomainError::PluginInUse { .. }
-        | DomainError::Forbidden { .. } => "",
-    }
-}
-
-// ---------------------------------------------------------------------------
-// From<DomainError> for Problem
-// ---------------------------------------------------------------------------
-
-impl From<DomainError> for Problem {
-    fn from(err: DomainError) -> Self {
-        let gts = gts_type(&err).to_string();
-        let inst = error_instance(&err).to_string();
-        let status = http_status_code(&err);
-        let t = error_title(&err).to_string();
-        let detail = err.to_string();
-
-        Problem::new(status, t, detail)
-            .with_type(gts)
-            .with_instance(inst)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Convenience functions for handlers
 // ---------------------------------------------------------------------------
 
-/// Convert a `DomainError` into a `Problem`, filling in `instance` for
-/// variants that don't carry their own. Used by management API handlers.
-pub(crate) fn domain_error_to_problem(err: DomainError, instance: &str) -> Problem {
-    let mut p = Problem::from(err);
-    if p.instance.is_empty() {
-        p.instance = instance.to_string();
-    }
-    p
+/// Convert a `DomainError` into a `Problem` using the request-derived `instance`.
+pub(crate) fn domain_error_to_problem(err: DomainError, instance: RequestInstance) -> Problem {
+    let gts = gts_type(&err).to_string();
+    let status = http_status_code(&err);
+    let title = error_title(&err).to_string();
+    let detail = err.to_string();
+
+    Problem::new(status, title, detail)
+        .with_type(gts)
+        .with_instance(instance)
 }
 
 /// Convert a `DomainError` into an axum `Response` with the
 /// `x-oagw-error-source: gateway` header. Used by the proxy handler.
-pub fn error_response(err: DomainError) -> Response {
+pub(crate) fn error_response(err: DomainError, instance: RequestInstance) -> Response {
     let retry_after = match &err {
         DomainError::RateLimitExceeded {
             retry_after_secs: Some(secs),
@@ -229,7 +182,7 @@ pub fn error_response(err: DomainError) -> Response {
         _ => None,
     };
 
-    let problem: Problem = err.into();
+    let problem = domain_error_to_problem(err, instance);
     let mut response = problem.into_response();
 
     response.headers_mut().insert(
@@ -254,9 +207,8 @@ mod tests {
     fn validation_error_produces_correct_problem() {
         let err = DomainError::Validation {
             detail: "missing required field 'server'".into(),
-            instance: "/oagw/v1/upstreams".into(),
         };
-        let p: Problem = err.into();
+        let p = domain_error_to_problem(err, RequestInstance::from_trusted("/oagw/v1/upstreams"));
         assert_eq!(p.status, StatusCode::BAD_REQUEST);
         assert_eq!(p.type_url, ERR_VALIDATION);
         assert_eq!(p.title, "Validation Error");
@@ -269,7 +221,7 @@ mod tests {
         let err = DomainError::Conflict {
             detail: "alias already exists".into(),
         };
-        let p: Problem = err.into();
+        let p = domain_error_to_problem(err, RequestInstance::from_trusted("/oagw/v1/upstreams"));
         assert_eq!(p.status, StatusCode::CONFLICT);
         assert_eq!(p.type_url, ERR_CONFLICT);
         assert_eq!(p.title, "Conflict");
@@ -279,10 +231,12 @@ mod tests {
     fn rate_limit_exceeded_produces_429() {
         let err = DomainError::RateLimitExceeded {
             detail: "rate limit exceeded for upstream".into(),
-            instance: "/oagw/v1/proxy/api.openai.com/v1/chat/completions".into(),
             retry_after_secs: Some(30),
         };
-        let p: Problem = err.into();
+        let p = domain_error_to_problem(
+            err,
+            RequestInstance::from_trusted("/oagw/v1/proxy/api.openai.com/v1/chat/completions"),
+        );
         assert_eq!(p.status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(p.type_url, ERR_RATE_LIMIT_EXCEEDED);
     }
@@ -293,34 +247,28 @@ mod tests {
             entity: "route",
             id: uuid::Uuid::nil(),
         };
-        let p: Problem = err.into();
+        let p = domain_error_to_problem(err, RequestInstance::from_trusted("/oagw/v1/routes/123"));
         assert_eq!(p.status, StatusCode::NOT_FOUND);
         assert_eq!(p.type_url, ERR_ROUTE_NOT_FOUND);
     }
 
     #[test]
     fn all_error_types_produce_valid_json() {
+        let request_instance = RequestInstance::from_trusted("/test");
         let errors: Vec<DomainError> = vec![
             DomainError::Validation {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::Conflict {
                 detail: "test".into(),
             },
-            DomainError::MissingTargetHost {
-                instance: "/test".into(),
-            },
-            DomainError::InvalidTargetHost {
-                instance: "/test".into(),
-            },
+            DomainError::MissingTargetHost,
+            DomainError::InvalidTargetHost,
             DomainError::UnknownTargetHost {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::AuthenticationFailed {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::NotFound {
                 entity: "route",
@@ -328,35 +276,28 @@ mod tests {
             },
             DomainError::PayloadTooLarge {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::RateLimitExceeded {
                 detail: "test".into(),
-                instance: "/test".into(),
                 retry_after_secs: None,
             },
             DomainError::SecretNotFound {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::DownstreamError {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::ProtocolError {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::UpstreamDisabled {
                 alias: "test".into(),
             },
             DomainError::ConnectionTimeout {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::RequestTimeout {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::Internal {
                 message: "test".into(),
@@ -365,35 +306,27 @@ mod tests {
                 status: 400,
                 error_code: "MISSING_HEADER".into(),
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::CorsOriginNotAllowed {
                 origin: "https://evil.com".into(),
-                instance: "/test".into(),
             },
             DomainError::CorsMethodNotAllowed {
                 method: "DELETE".into(),
-                instance: "/test".into(),
             },
             DomainError::CorsHeaderNotAllowed {
                 header: "x-custom".into(),
-                instance: "/test".into(),
             },
             DomainError::StreamAborted {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::LinkUnavailable {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::CircuitBreakerOpen {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::IdleTimeout {
                 detail: "test".into(),
-                instance: "/test".into(),
             },
             DomainError::PluginNotFound {
                 detail: "test".into(),
@@ -406,7 +339,7 @@ mod tests {
             },
         ];
         for err in errors {
-            let p: Problem = err.into();
+            let p = domain_error_to_problem(err, request_instance.clone());
             let json = serde_json::to_string(&p).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
             assert!(parsed.get("type").is_some());
@@ -418,23 +351,16 @@ mod tests {
     }
 
     #[test]
-    fn domain_error_to_problem_fills_missing_instance() {
+    fn domain_error_to_problem_uses_request_instance() {
         let err = DomainError::NotFound {
             entity: "upstream",
             id: uuid::Uuid::nil(),
         };
-        let p = domain_error_to_problem(err, "/oagw/v1/upstreams/123");
-        assert_eq!(p.instance, "/oagw/v1/upstreams/123");
-    }
-
-    #[test]
-    fn domain_error_to_problem_preserves_existing_instance() {
-        let err = DomainError::Validation {
-            detail: "bad input".into(),
-            instance: "/oagw/v1/upstreams".into(),
-        };
-        let p = domain_error_to_problem(err, "/fallback");
-        assert_eq!(p.instance, "/oagw/v1/upstreams");
+        let p = domain_error_to_problem(
+            err,
+            RequestInstance::from_trusted("/oagw/v1/upstreams/123?include=routes"),
+        );
+        assert_eq!(p.instance, "/oagw/v1/upstreams/123?include=routes");
     }
 
     #[test]
@@ -443,9 +369,8 @@ mod tests {
             status: 403,
             error_code: "FORBIDDEN".into(),
             detail: "test".into(),
-            instance: "/test".into(),
         };
-        let p: Problem = err.into();
+        let p = domain_error_to_problem(err, RequestInstance::from_trusted("/test"));
         assert_eq!(p.status, StatusCode::FORBIDDEN);
     }
 
@@ -455,9 +380,8 @@ mod tests {
             status: 503,
             error_code: "UNAVAILABLE".into(),
             detail: "test".into(),
-            instance: "/test".into(),
         };
-        let p: Problem = err.into();
+        let p = domain_error_to_problem(err, RequestInstance::from_trusted("/test"));
         assert_eq!(p.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
@@ -467,9 +391,8 @@ mod tests {
             status: 200,
             error_code: "OK".into(),
             detail: "test".into(),
-            instance: "/test".into(),
         };
-        let p: Problem = err.into();
+        let p = domain_error_to_problem(err, RequestInstance::from_trusted("/test"));
         assert_eq!(p.status, StatusCode::BAD_REQUEST);
     }
 
@@ -479,9 +402,8 @@ mod tests {
             status: 301,
             error_code: "REDIRECT".into(),
             detail: "test".into(),
-            instance: "/test".into(),
         };
-        let p: Problem = err.into();
+        let p = domain_error_to_problem(err, RequestInstance::from_trusted("/test"));
         assert_eq!(p.status, StatusCode::BAD_REQUEST);
     }
 
@@ -491,9 +413,8 @@ mod tests {
             status: 999,
             error_code: "INVALID".into(),
             detail: "test".into(),
-            instance: "/test".into(),
         };
-        let p: Problem = err.into();
+        let p = domain_error_to_problem(err, RequestInstance::from_trusted("/test"));
         assert_eq!(p.status, StatusCode::BAD_REQUEST);
     }
 
@@ -503,7 +424,7 @@ mod tests {
             entity: "route",
             id: uuid::Uuid::nil(),
         };
-        let resp = error_response(err);
+        let resp = error_response(err, RequestInstance::from_trusted("/test"));
         assert_eq!(
             resp.headers().get("x-oagw-error-source").unwrap(),
             "gateway"

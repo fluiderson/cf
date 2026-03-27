@@ -17,6 +17,7 @@ use crate::domain::model::{
     CreateRouteRequest, CreateUpstreamRequest, Endpoint, ListQuery, Route, UpdateRouteRequest,
     UpdateUpstreamRequest, Upstream,
 };
+use crate::request_instance::RequestInstance;
 
 /// Result of endpoint selection: the domain endpoint plus an optional
 /// pre-resolved socket address from the load balancer's DNS cache.
@@ -105,6 +106,7 @@ pub(crate) trait DataPlaneService: Send + Sync {
         &self,
         ctx: SecurityContext,
         req: http::Request<Body>,
+        request_instance: RequestInstance,
     ) -> Result<http::Response<Body>, DomainError>;
 
     /// Remove a rate-limit bucket by key (e.g. `"upstream:{id}"` or `"route:{id}"`).

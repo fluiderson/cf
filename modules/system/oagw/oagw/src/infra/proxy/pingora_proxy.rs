@@ -18,10 +18,11 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::api::rest::error::domain_error_to_problem;
 use crate::domain::error::DomainError;
 use crate::domain::model::{Endpoint, Scheme};
 use crate::domain::services::{EndpointSelector, SelectedEndpoint};
-use modkit::api::Problem;
+use crate::request_instance::RequestInstance;
 
 // ---------------------------------------------------------------------------
 // Internal header names (D9)
@@ -289,7 +290,7 @@ impl EndpointSelector for PingoraEndpointSelector {
 
 pub struct ProxyCtx {
     endpoint: Endpoint,
-    instance_uri: String,
+    instance_uri: Option<RequestInstance>,
     /// Upstream that owns this endpoint (for diagnostic logs).
     upstream_id: Option<Uuid>,
     /// Pre-resolved socket address from the load balancer's DNS cache.
@@ -322,7 +323,7 @@ impl ProxyCtx {
             };
         }
         if let Some(v) = headers.get(H_INSTANCE_URI).and_then(|v| v.to_str().ok()) {
-            self.instance_uri = v.to_string();
+            self.instance_uri = Some(RequestInstance::from_trusted(v.to_string()));
         }
         if let Some(v) = headers.get(H_UPSTREAM_ID).and_then(|v| v.to_str().ok()) {
             self.upstream_id = v.parse().ok();
@@ -341,7 +342,7 @@ impl Default for ProxyCtx {
                 host: String::new(),
                 port: 443,
             },
-            instance_uri: String::new(),
+            instance_uri: None,
             upstream_id: None,
             resolved_addr: None,
         }
@@ -550,11 +551,13 @@ impl ProxyHttp for PingoraProxy {
         e: &pingora_core::Error,
         ctx: &mut Self::CTX,
     ) -> pingora_proxy::FailToProxy {
-        let instance = ctx.instance_uri.clone();
+        let request_instance = ctx
+            .instance_uri
+            .clone()
+            .unwrap_or_else(|| RequestInstance::from_uri(&session.req_header().uri));
         let domain_err = match &e.etype {
             pingora_core::ErrorType::ConnectTimedout => DomainError::ConnectionTimeout {
                 detail: "upstream connection timed out".into(),
-                instance,
             },
             pingora_core::ErrorType::ReadTimedout | pingora_core::ErrorType::WriteTimedout => {
                 DomainError::RequestTimeout {
@@ -566,13 +569,11 @@ impl ProxyHttp for PingoraProxy {
                             "write"
                         }
                     ),
-                    instance,
                 }
             }
             pingora_core::ErrorType::H2Error | pingora_core::ErrorType::H2Downgrade => {
                 DomainError::ProtocolError {
                     detail: "upstream HTTP/2 error".into(),
-                    instance,
                 }
             }
             pingora_core::ErrorType::ReadError | pingora_core::ErrorType::WriteError => {
@@ -585,7 +586,6 @@ impl ProxyHttp for PingoraProxy {
                             "write"
                         }
                     ),
-                    instance,
                 }
             }
             pingora_core::ErrorType::ConnectNoRoute
@@ -599,7 +599,6 @@ impl ProxyHttp for PingoraProxy {
                     _ => "upstream connection error",
                 }
                 .into(),
-                instance,
             },
             _ => DomainError::DownstreamError {
                 detail: match &e.etype {
@@ -615,11 +614,10 @@ impl ProxyHttp for PingoraProxy {
                     _ => "upstream error",
                 }
                 .into(),
-                instance,
             },
         };
 
-        let problem: Problem = domain_err.into();
+        let problem = domain_error_to_problem(domain_err, request_instance);
         let status = problem.status.as_u16();
         let body_bytes = Bytes::from(serde_json::to_vec(&problem).unwrap_or_default());
 
@@ -652,7 +650,7 @@ impl ProxyHttp for PingoraProxy {
         info!(
             reused,
             peer = %peer,
-            instance = %ctx.instance_uri,
+            instance = ctx.instance_uri.as_ref().map_or("", RequestInstance::as_str),
             "Connected to upstream"
         );
         Ok(())
@@ -1091,7 +1089,10 @@ mod tests {
         assert_eq!(ctx.endpoint.host, "api.example.com");
         assert_eq!(ctx.endpoint.port, 8443);
         assert_eq!(ctx.endpoint.scheme, Scheme::Https);
-        assert_eq!(ctx.instance_uri, "/test/instance");
+        assert_eq!(
+            ctx.instance_uri.as_ref().map(RequestInstance::as_str),
+            Some("/test/instance")
+        );
         assert_eq!(ctx.upstream_id, Some(upstream_id));
         let expected: std::net::SocketAddr = "93.184.216.34:8443".parse().unwrap();
         assert_eq!(ctx.resolved_addr, Some(expected));

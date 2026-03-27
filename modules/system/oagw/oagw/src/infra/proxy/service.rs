@@ -28,6 +28,7 @@ use crate::domain::services::{
 };
 use crate::infra::plugin::{AuthPluginRegistry, GuardPluginRegistry, TransformPluginRegistry};
 use crate::infra::proxy::{actions, resources};
+use crate::request_instance::RequestInstance;
 
 use super::headers;
 use super::pingora_proxy::{
@@ -124,7 +125,6 @@ impl DataPlaneServiceImpl {
         status: http::StatusCode,
         resp_headers: HeaderMap,
         resp_body_stream: BodyStream,
-        instance_uri: String,
     ) -> Result<http::Response<Body>, DomainError> {
         execute_guard_responses(
             &self.guard_registry,
@@ -133,7 +133,6 @@ impl DataPlaneServiceImpl {
             &resp_headers,
             pipeline.method,
             pipeline.path_suffix,
-            &instance_uri,
             pipeline.ctx,
         )
         .await?;
@@ -167,7 +166,7 @@ impl DataPlaneServiceImpl {
             }
         }
 
-        build_proxy_response(status, resp_headers, resp_body_stream, instance_uri)
+        build_proxy_response(status, resp_headers, resp_body_stream)
     }
 
     /// Two-tier endpoint selection (D1):
@@ -177,14 +176,12 @@ impl DataPlaneServiceImpl {
         &self,
         upstream: &Upstream,
         req_headers: &http::HeaderMap,
-        instance_uri: &str,
     ) -> Result<SelectedEndpoint, DomainError> {
         let endpoints = &upstream.server.endpoints;
 
         if endpoints.is_empty() {
             return Err(DomainError::DownstreamError {
                 detail: "upstream has no endpoints".into(),
-                instance: instance_uri.to_string(),
             });
         }
 
@@ -200,9 +197,7 @@ impl DataPlaneServiceImpl {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
             {
-                return Err(DomainError::InvalidTargetHost {
-                    instance: instance_uri.to_string(),
-                });
+                return Err(DomainError::InvalidTargetHost);
             }
 
             // Find matching endpoint by host (no LB — no resolved addr).
@@ -223,7 +218,6 @@ impl DataPlaneServiceImpl {
                             "X-OAGW-Target-Host '{}' does not match any configured endpoint",
                             target_host
                         ),
-                        instance: instance_uri.to_string(),
                     }
                 })?;
             return Ok(SelectedEndpoint {
@@ -250,7 +244,6 @@ impl DataPlaneServiceImpl {
             .await
             .ok_or_else(|| DomainError::DownstreamError {
                 detail: "all backends are unhealthy".into(),
-                instance: instance_uri.to_string(),
             })
     }
 }
@@ -261,8 +254,9 @@ impl DataPlaneService for DataPlaneServiceImpl {
         &self,
         ctx: SecurityContext,
         req: http::Request<Body>,
+        request_instance: RequestInstance,
     ) -> Result<http::Response<Body>, DomainError> {
-        let instance_uri = req.uri().to_string();
+        let instance_uri = request_instance.as_str();
 
         self.policy_enforcer
             .access_scope_with(
@@ -317,7 +311,6 @@ impl DataPlaneService for DataPlaneServiceImpl {
         {
             return Err(DomainError::ProtocolError {
                 detail: "WebSocket upgrade is not supported by the proxy".into(),
-                instance: instance_uri,
             });
         }
 
@@ -332,7 +325,6 @@ impl DataPlaneService for DataPlaneServiceImpl {
                             "request body of {} bytes exceeds maximum of {max_body} bytes",
                             b.len()
                         ),
-                        instance: instance_uri,
                     });
                 }
                 (b, None)
@@ -387,7 +379,6 @@ impl DataPlaneService for DataPlaneServiceImpl {
                     origin,
                     request_method,
                     &request_headers_list,
-                    &instance_uri,
                 )?;
 
                 let mut response = http::Response::builder()
@@ -422,7 +413,6 @@ impl DataPlaneService for DataPlaneServiceImpl {
                             "query parameter '{}' is not in the route's query_allowlist",
                             key
                         ),
-                        instance: instance_uri,
                     });
                 }
             }
@@ -440,7 +430,6 @@ impl DataPlaneService for DataPlaneServiceImpl {
                         "path suffix not allowed: route path_suffix_mode is disabled but request has extra path '{}'",
                         extra
                     ),
-                    instance: instance_uri,
                 });
             }
         }
@@ -466,7 +455,6 @@ impl DataPlaneService for DataPlaneServiceImpl {
             let plugin = self.auth_registry.resolve(&auth.plugin_type).map_err(|e| {
                 DomainError::AuthenticationFailed {
                     detail: e.to_string(),
-                    instance: instance_uri.clone(),
                 }
             })?;
             let mut auth_ctx = AuthContext {
@@ -479,23 +467,18 @@ impl DataPlaneService for DataPlaneServiceImpl {
                 .await
                 .map_err(|e| match e {
                     crate::domain::plugin::PluginError::SecretNotFound(ref s) => {
-                        DomainError::SecretNotFound {
-                            detail: s.clone(),
-                            instance: instance_uri.clone(),
-                        }
+                        DomainError::SecretNotFound { detail: s.clone() }
                     }
                     crate::domain::plugin::PluginError::Rejected(ref msg)
                     | crate::domain::plugin::PluginError::InvalidConfig(ref msg) => {
                         DomainError::Validation {
                             detail: msg.clone(),
-                            instance: instance_uri.clone(),
                         }
                     }
                     crate::domain::plugin::PluginError::AuthFailed(_)
                     | crate::domain::plugin::PluginError::Internal(_) => {
                         DomainError::AuthenticationFailed {
                             detail: e.to_string(),
-                            instance: instance_uri.clone(),
                         }
                     }
                 })?;
@@ -544,7 +527,6 @@ impl DataPlaneService for DataPlaneServiceImpl {
                         status,
                         error_code,
                         detail,
-                        instance: instance_uri,
                     });
                 }
                 Err(e) => {
@@ -618,16 +600,13 @@ impl DataPlaneService for DataPlaneServiceImpl {
         }
 
         // 5a. Endpoint selection (D1 — two-tier).
-        let selected = self
-            .select_endpoint(&upstream, &req_headers, &instance_uri)
-            .await?;
+        let selected = self.select_endpoint(&upstream, &req_headers).await?;
         let endpoint = &selected.endpoint;
 
         // 5b. Enforce HTTPS-only constraint (cpt-cf-oagw-constraint-https-only).
         if !self.allow_http_upstream && matches!(endpoint.scheme, Scheme::Http) {
             return Err(DomainError::Validation {
                 detail: "upstream endpoint uses HTTP; only HTTPS endpoints are permitted".into(),
-                instance: instance_uri,
             });
         }
 
@@ -636,11 +615,11 @@ impl DataPlaneService for DataPlaneServiceImpl {
         // 6. Check rate limit (upstream then route).
         if let Some(ref rl) = upstream.rate_limit {
             let key = format!("upstream:{}", upstream.id);
-            self.rate_limiter.try_consume(&key, rl, &instance_uri)?;
+            self.rate_limiter.try_consume(&key, rl)?;
         }
         if let Some(ref rl) = route.rate_limit {
             let key = format!("route:{}", route.id);
-            self.rate_limiter.try_consume(&key, rl, &instance_uri)?;
+            self.rate_limiter.try_consume(&key, rl)?;
         }
 
         // 7. Build URL.
@@ -677,7 +656,7 @@ impl DataPlaneService for DataPlaneServiceImpl {
             outbound_headers.insert(H_ENDPOINT_PORT, v);
         }
         outbound_headers.insert(H_ENDPOINT_SCHEME, HeaderValue::from_static(scheme_str));
-        if let Ok(v) = HeaderValue::from_str(&instance_uri) {
+        if let Ok(v) = HeaderValue::from_str(instance_uri) {
             outbound_headers.insert(H_INSTANCE_URI, v);
         }
         if let Some(addr) = selected.resolved_addr
@@ -725,7 +704,6 @@ impl DataPlaneService for DataPlaneServiceImpl {
             client_write.write_all(&header_bytes).await.map_err(|e| {
                 DomainError::DownstreamError {
                     detail: format!("failed to write to proxy bridge: {e}"),
-                    instance: instance_uri.clone(),
                 }
             })?;
 
@@ -735,7 +713,6 @@ impl DataPlaneService for DataPlaneServiceImpl {
             // fast instead of waiting for the full request timeout.
             let (limit_tx, limit_rx) = tokio::sync::oneshot::channel::<usize>();
             let (abort_tx, abort_rx) = tokio::sync::oneshot::channel::<String>();
-            let body_instance_uri = instance_uri.clone();
             tokio::spawn(async move {
                 let mut total_bytes: usize = 0;
                 let mut exceeded = false;
@@ -809,31 +786,26 @@ impl DataPlaneService for DataPlaneServiceImpl {
                         detail: format!(
                             "streaming request body of {total} bytes exceeds maximum of {max_body} bytes"
                         ),
-                        instance: body_instance_uri,
                     })
                 }
                 Ok(reason) = abort_rx => {
                     Err(DomainError::DownstreamError {
                         detail: format!("streaming request body failed mid-stream: {reason}"),
-                        instance: body_instance_uri,
                     })
                 }
                 result = resp_future => {
                     let (status, resp_headers, resp_body_stream) = result
                         .map_err(|_| DomainError::RequestTimeout {
                             detail: format!("request to {url} timed out after {timeout:?}"),
-                            instance: instance_uri.clone(),
                         })?
                         .map_err(|e| DomainError::DownstreamError {
                             detail: format!("proxy bridge error: {e}"),
-                            instance: instance_uri.clone(),
                         })?;
                     self.finalize_response(
                         &pipeline,
                         status,
                         resp_headers,
                         resp_body_stream,
-                        instance_uri,
                     )
                     .await
                 }
@@ -852,7 +824,6 @@ impl DataPlaneService for DataPlaneServiceImpl {
                 .await
                 .map_err(|e| DomainError::DownstreamError {
                     detail: format!("failed to write to proxy bridge: {e}"),
-                    instance: instance_uri.clone(),
                 })?;
             // Do NOT shutdown the write side — Pingora uses Content-Length to
             // determine the request boundary, and an early write-close is
@@ -864,21 +835,13 @@ impl DataPlaneService for DataPlaneServiceImpl {
                     .await
                     .map_err(|_| DomainError::RequestTimeout {
                         detail: format!("request to {url} timed out after {timeout:?}"),
-                        instance: instance_uri.clone(),
                     })?
                     .map_err(|e| DomainError::DownstreamError {
                         detail: format!("proxy bridge error: {e}"),
-                        instance: instance_uri.clone(),
                     })?;
 
-            self.finalize_response(
-                &pipeline,
-                status,
-                resp_headers,
-                resp_body_stream,
-                instance_uri,
-            )
-            .await
+            self.finalize_response(&pipeline, status, resp_headers, resp_body_stream)
+                .await
         };
 
         // 9d. Execute transform error plugins on upstream failures.
@@ -932,7 +895,6 @@ async fn execute_guard_responses(
     resp_headers: &HeaderMap,
     method: &str,
     path: &str,
-    instance_uri: &str,
     security_context: &SecurityContext,
 ) -> Result<(), DomainError> {
     let resp_header_map = headers::header_map_to_vec(resp_headers);
@@ -968,7 +930,6 @@ async fn execute_guard_responses(
                     status,
                     error_code,
                     detail,
-                    instance: instance_uri.to_string(),
                 });
             }
             Err(e) => {
@@ -1100,8 +1061,8 @@ async fn execute_transform_errors(
 fn domain_error_status(err: &DomainError) -> u16 {
     match err {
         DomainError::Validation { .. }
-        | DomainError::MissingTargetHost { .. }
-        | DomainError::InvalidTargetHost { .. }
+        | DomainError::MissingTargetHost
+        | DomainError::InvalidTargetHost
         | DomainError::UnknownTargetHost { .. } => 400,
         DomainError::AuthenticationFailed { .. } => 401,
         DomainError::Forbidden { .. } => 403,
@@ -1132,8 +1093,8 @@ fn domain_error_type_name(err: &DomainError) -> &'static str {
     match err {
         DomainError::Validation { .. } => "ValidationError",
         DomainError::Conflict { .. } => "Conflict",
-        DomainError::MissingTargetHost { .. } => "MissingTargetHost",
-        DomainError::InvalidTargetHost { .. } => "InvalidTargetHost",
+        DomainError::MissingTargetHost => "MissingTargetHost",
+        DomainError::InvalidTargetHost => "InvalidTargetHost",
         DomainError::UnknownTargetHost { .. } => "UnknownTargetHost",
         DomainError::AuthenticationFailed { .. } => "AuthenticationFailed",
         DomainError::NotFound { .. } => "NotFound",
@@ -1166,7 +1127,6 @@ fn build_proxy_response(
     status: http::StatusCode,
     mut resp_headers: HeaderMap,
     body_stream: BodyStream,
-    instance_uri: String,
 ) -> Result<http::Response<Body>, DomainError> {
     let error_source = headers::extract_error_source(&resp_headers);
     headers::sanitize_response_headers(&mut resp_headers);
@@ -1176,7 +1136,6 @@ fn build_proxy_response(
         .body(Body::Stream(body_stream))
         .map_err(|e| DomainError::DownstreamError {
             detail: format!("failed to build response: {e}"),
-            instance: instance_uri,
         })?;
     *resp.headers_mut() = resp_headers;
     resp.extensions_mut().insert(error_source);
@@ -1491,7 +1450,7 @@ mod tests {
         }]);
         let headers = HeaderMap::new();
 
-        let err = svc.select_endpoint(&upstream, &headers, "/test").await;
+        let err = svc.select_endpoint(&upstream, &headers).await;
 
         // select_endpoint itself doesn't enforce HTTPS — the check is in proxy_request
         // after select_endpoint returns. Verify the endpoint is returned here (enforcement
@@ -1510,10 +1469,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-oagw-target-host", "a.com".parse().unwrap());
 
-        let result = svc
-            .select_endpoint(&upstream, &headers, "/test")
-            .await
-            .unwrap();
+        let result = svc.select_endpoint(&upstream, &headers).await.unwrap();
         assert_eq!(result.endpoint.host, "a.com");
         assert_eq!(selector.calls(), 0, "BackendSelector should not be called");
     }
@@ -1527,10 +1483,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-oagw-target-host", "evil.com".parse().unwrap());
 
-        let err = svc
-            .select_endpoint(&upstream, &headers, "/test")
-            .await
-            .unwrap_err();
+        let err = svc.select_endpoint(&upstream, &headers).await.unwrap_err();
         assert!(
             matches!(err, DomainError::UnknownTargetHost { .. }),
             "expected UnknownTargetHost, got: {err:?}"
@@ -1554,12 +1507,9 @@ mod tests {
         ] {
             let mut headers = HeaderMap::new();
             headers.insert("x-oagw-target-host", bad_value.parse().unwrap());
-            let err = svc
-                .select_endpoint(&upstream, &headers, "/test")
-                .await
-                .unwrap_err();
+            let err = svc.select_endpoint(&upstream, &headers).await.unwrap_err();
             assert!(
-                matches!(err, DomainError::InvalidTargetHost { .. }),
+                matches!(err, DomainError::InvalidTargetHost),
                 "expected InvalidTargetHost for '{bad_value}', got: {err:?}"
             );
         }
@@ -1568,12 +1518,9 @@ mod tests {
         // allows empty strings while .parse() does not.
         let mut headers = HeaderMap::new();
         headers.insert("x-oagw-target-host", HeaderValue::from_static(""));
-        let err = svc
-            .select_endpoint(&upstream, &headers, "/test")
-            .await
-            .unwrap_err();
+        let err = svc.select_endpoint(&upstream, &headers).await.unwrap_err();
         assert!(
-            matches!(err, DomainError::InvalidTargetHost { .. }),
+            matches!(err, DomainError::InvalidTargetHost),
             "expected InvalidTargetHost for empty header, got: {err:?}"
         );
     }
@@ -1586,14 +1533,8 @@ mod tests {
         let upstream = upstream_with(vec![ep("a.com", 443), ep("b.com", 443)]);
         let headers = HeaderMap::new();
 
-        let ep1 = svc
-            .select_endpoint(&upstream, &headers, "/test")
-            .await
-            .unwrap();
-        let ep2 = svc
-            .select_endpoint(&upstream, &headers, "/test")
-            .await
-            .unwrap();
+        let ep1 = svc.select_endpoint(&upstream, &headers).await.unwrap();
+        let ep2 = svc.select_endpoint(&upstream, &headers).await.unwrap();
 
         assert_eq!(
             selector.calls(),
@@ -1613,10 +1554,7 @@ mod tests {
         let upstream = upstream_with(vec![ep("only.com", 443)]);
         let headers = HeaderMap::new();
 
-        let result = svc
-            .select_endpoint(&upstream, &headers, "/test")
-            .await
-            .unwrap();
+        let result = svc.select_endpoint(&upstream, &headers).await.unwrap();
         assert_eq!(result.endpoint.host, "only.com");
         assert_eq!(
             selector.calls(),
@@ -1634,19 +1572,13 @@ mod tests {
         // Valid header matching the single endpoint → OK.
         let mut headers = HeaderMap::new();
         headers.insert("x-oagw-target-host", "a.com".parse().unwrap());
-        let result = svc
-            .select_endpoint(&upstream, &headers, "/test")
-            .await
-            .unwrap();
+        let result = svc.select_endpoint(&upstream, &headers).await.unwrap();
         assert_eq!(result.endpoint.host, "a.com");
 
         // Invalid header not matching → UnknownTargetHost.
         let mut headers = HeaderMap::new();
         headers.insert("x-oagw-target-host", "b.com".parse().unwrap());
-        let err = svc
-            .select_endpoint(&upstream, &headers, "/test")
-            .await
-            .unwrap_err();
+        let err = svc.select_endpoint(&upstream, &headers).await.unwrap_err();
         assert!(
             matches!(err, DomainError::UnknownTargetHost { .. }),
             "expected UnknownTargetHost for mismatched header on single-endpoint upstream"
