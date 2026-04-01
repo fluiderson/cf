@@ -12,22 +12,30 @@
   - [2.1 Human Actors](#21-human-actors)
   - [2.2 System Actors](#22-system-actors)
 - [3. Operational Concept & Environment](#3-operational-concept--environment)
+  - [3.1 Module-Specific Environment Constraints](#31-module-specific-environment-constraints)
+  - [3.2 Data Ownership & Classification](#32-data-ownership--classification)
 - [4. Scope](#4-scope)
   - [4.1 In Scope](#41-in-scope)
   - [4.2 Out of Scope](#42-out-of-scope)
 - [5. Functional Requirements](#5-functional-requirements)
   - [P1 — Core](#p1--core)
   - [P2 — Reliability & Governance](#p2--reliability--governance)
-  - [P3 — Optimization](#p3--optimization)
+  - [P3 — Additional Capabilities](#p3--additional-capabilities)
   - [P4 — Enterprise](#p4--enterprise)
 - [6. Non-Functional Requirements](#6-non-functional-requirements)
   - [Scalability](#scalability)
+  - [Data Retention](#data-retention)
+  - [Compatibility](#compatibility)
+  - [NFR Exclusions](#nfr-exclusions)
+  - [Recovery](#recovery)
 - [7. Public Library Interfaces](#7-public-library-interfaces)
 - [8. Use Cases](#8-use-cases)
 - [9. Acceptance Criteria](#9-acceptance-criteria)
 - [10. Dependencies](#10-dependencies)
 - [11. Assumptions](#11-assumptions)
 - [12. Risks](#12-risks)
+- [13. Open Questions](#13-open-questions)
+- [14. Traceability](#14-traceability)
 
 <!-- /toc -->
 
@@ -317,6 +325,14 @@ Cross-cutting concern — applies to all operations, no dedicated UC.
 
 **Actors**: `cpt-cf-llm-gateway-actor-consumer`, `cpt-cf-llm-gateway-actor-usage-tracker`, `cpt-cf-llm-gateway-actor-model-registry`
 
+#### Model Capability Check
+
+- [ ] `p1` - **ID**: `cpt-cf-llm-gateway-fr-model-capability-check-v1`
+
+The system **MUST** verify that the resolved model supports the capabilities required by the request before dispatching to the provider. If the model does not support a required capability, the system **MUST** return a `capability_not_supported` error to the consumer without calling the provider.
+
+**Actors**: `cpt-cf-llm-gateway-actor-consumer`
+
 ### P2 — Reliability & Governance
 
 #### Provider Fallback
@@ -491,6 +507,7 @@ Not applicable — LLM Gateway exposes only a REST API (documented in DESIGN.md)
 - **Provider error**: Gateway normalizes provider error to Gateway error format and returns to consumer.
 - **Timeout**: Gateway enforces TTFT and total timeouts; on expiry triggers fallback (if configured) or returns timeout error.
 - **Invalid model**: Gateway returns model-not-found error if model is unavailable for tenant.
+- **Model not capable**: Gateway returns capability_not_supported error if model does not support a capability required by the request (e.g., tool calling, vision, structured output).
 
 **Acceptance criteria**:
 - Response in normalized format regardless of provider
@@ -517,6 +534,7 @@ Not applicable — LLM Gateway exposes only a REST API (documented in DESIGN.md)
 **Alternative Flows**:
 - **Mid-stream provider failure**: Gateway closes stream with error event and reports partial usage.
 - **Consumer disconnects**: Gateway cancels upstream provider request and reports usage for consumed tokens.
+- **Model not capable**: Gateway returns capability_not_supported error if model does not support streaming.
 
 **Acceptance criteria**:
 - Chunks normalized from provider format
@@ -1011,7 +1029,8 @@ Not applicable — LLM Gateway exposes only a REST API (documented in DESIGN.md)
 
 ## 13. Open Questions
 
-- **Quota Manager component** (Owner: Platform Architecture, Resolve by: before P2 implementation begins): Gateway requires a quota-checking dependency to enforce AI credit quotas before request execution. The specific component that provides quota management is not yet defined. It may be a dedicated Quota Manager module, an extension of Usage Tracker, or an external service. This needs to be resolved before implementing `cpt-cf-llm-gateway-fr-budget-enforcement-v1`.
+- **Quota enforcement ownership and component** (Owner: Platform Architecture, Resolve by: before P2 implementation begins): Two related decisions must be made together. (1) *Ownership boundary*: does Gateway own quota *enforcement* (atomic preflight reserve + terminal settle + bounded debit on abort) or only *metering* (report usage, external component enforces)? The current `check_quota()` → proceed → `report_usage()` sequence is non-atomic — under concurrent load, multiple requests pass `check_quota()` before any `report_usage()` completes, allowing a tenant to exceed their limit by N×budget (N = concurrent in-flight requests). If Gateway owns enforcement, the reserve/settle pattern is required, not optional — a best-effort gate is effectively decorative under load. If Gateway does metering only, the external component handles enforcement asynchronously. (2) *Component identity*: the specific component that provides quota management is not yet defined — it may be a dedicated Quota Manager module, an extension of Usage Tracker, or an external service. Both decisions must be resolved before implementing `cpt-cf-llm-gateway-fr-budget-enforcement-v1`.
+- **Budget enforcement edge cases** (Owner: Platform Architecture, Resolve by: with quota enforcement ownership decision above): The following scenarios must be addressed when the ownership boundary is decided: (a) *Provider stream without usage* — if a provider stream closes before delivering usage data (network error, provider error mid-stream), policy must specify whether to debit input tokens only, report zero, or surface an error; (b) *Fallback billing* — when a primary provider fails after consuming input tokens, policy must define whether partial cost is reported before initiating fallback or only on final completion, with one usage event per committed debit and no double-reporting across fallback attempts; (c) *Background job budgeting* — quota is checked at submission time but the job executes minutes later under a possibly changed quota state, requiring the reserve/settle pattern to span the submission-to-execution gap if Gateway owns enforcement.
 - **Rate limiting mechanism** (Owner: Platform Architecture, Resolve by: before P2 implementation begins): Rate limiting (`cpt-cf-llm-gateway-fr-rate-limiting-v1`) is closely related to quota management. Whether rate limiting and quota enforcement are provided by the same component or separate components is an open question.
 - **Request monitoring and observability** (Owner: Platform Architecture, Resolve by: before P1 implementation begins): The LLM Gateway needs to track how many requests are being processed, including metrics such as request counts, latency, error rates, and token usage per provider/model. However, the platform does not yet have a standardized approach to monitoring and observability across modules. A platform-wide monitoring strategy must be agreed upon before implementing module-level metrics, to ensure consistency and avoid fragmented solutions.
 

@@ -62,6 +62,7 @@ See [PRD.md](./PRD.md) section 1 "Overview" — Key Problems Solved:
 | `cpt-cf-llm-gateway-fr-async-jobs-v1` | Persistent DB for job state, polling abstraction |
 | `cpt-cf-llm-gateway-fr-realtime-audio-v1` | WebSocket proxy via Outbound API GW |
 | `cpt-cf-llm-gateway-fr-usage-tracking-v1` | AI credit reporting via Usage Tracker (tokens→credits conversion using Model Registry prices) |
+| `cpt-cf-llm-gateway-fr-model-capability-check-v1` | Model capability validation via Model Registry before provider dispatch |
 | `cpt-cf-llm-gateway-fr-provider-fallback-v1` | Fallback chain from request config |
 | `cpt-cf-llm-gateway-fr-timeout-v1` | TTFT + total timeout tracking |
 | `cpt-cf-llm-gateway-fr-pre-call-interceptor-v1` | Hook Plugin pre_call invocation |
@@ -333,7 +334,7 @@ graph TB
 
 **Interactions**:
 - Consumer → API Layer: Normalized requests
-- Application Layer → Model Registry: Model resolution, availability check, and per-model pricing for AI credit conversion
+- Application Layer → Model Registry: Model resolution, availability check, and per-model pricing for AI credit conversion; ModelInfo includes model capabilities used by Application Layer for pre-dispatch capability validation
 - Application Layer → Quota Manager: Pre-request AI credit quota checks
 - Application Layer → Usage Tracker: AI credit consumption reporting via Usage Tracker SDK (at-least-once delivery handled by SDK)
 - Application Layer → Type Registry: Tool schema resolution
@@ -344,7 +345,7 @@ graph TB
 
 | Dependency | Role |
 |------------|------|
-| Model Registry | Model catalog, availability checks, per-model pricing for AI credit conversion |
+| Model Registry | Model catalog, availability checks, per-model pricing for AI credit conversion; ModelInfo includes model capabilities |
 | Outbound API Gateway | External API calls to providers |
 | FileStorage | Media storage and retrieval |
 | Type Registry | Tool schema resolution |
@@ -551,7 +552,7 @@ Key streaming semantics:
 
 **Streaming-specific constraints**:
 - **No provider fallback after first delta**: Provider fallback (see `cpt-cf-llm-gateway-seq-provider-fallback-v1`) is only attempted before streaming begins. Once any delta event has been sent to the consumer, the stream is committed to the current provider — switching providers mid-stream is not possible.
-- **Consumer disconnect does not abort the provider request**: If the consumer disconnects, Gateway continues reading the provider stream to completion. This ensures token usage is fully reported to the Usage Tracker. The provider response is discarded after the stream closes.
+- **Consumer disconnect does not abort the provider request**: If the consumer disconnects, Gateway continues reading the provider stream to completion. This ensures token usage is fully reported to the Usage Tracker. The provider response is discarded after the stream closes. If the provider stream itself terminates before delivering usage data (network error, provider error mid-stream), the handling policy is an open question — see PRD section 13 "Budget enforcement edge cases".
 - **Usage is always requested from providers**: Gateway always sets `stream_options: {include_usage: true}` on provider requests regardless of the consumer's `stream_options` value. Token usage is required for billing. The consumer's `stream_options.include_usage` controls only whether the `response.completed` event exposes usage to the consumer — it does not affect what Gateway requests from the provider.
 
 #### Hook Plugin SDK Interface
@@ -639,6 +640,10 @@ sequenceDiagram
 
     C->>GW: POST /responses (model, input)
     GW->>GW: Resolve provider
+    GW->>GW: Check model capabilities vs request
+    alt Model not capable
+        GW-->>C: capability_not_supported
+    end
     GW->>OB: Provider API call
     OB->>P: Request
     P-->>OB: Response
@@ -661,6 +666,11 @@ sequenceDiagram
     participant P as Provider
 
     C->>GW: POST /responses (stream=true)
+    GW->>GW: Resolve provider
+    GW->>GW: Check model capabilities vs request
+    alt Model not capable
+        GW-->>C: capability_not_supported
+    end
     GW->>OB: Streaming request
     OB->>P: Request
     GW-->>C: response.created
@@ -1234,7 +1244,7 @@ sequenceDiagram
 4. **Convert to AI credits**: After response, Gateway obtains per-model pricing from Model Registry and converts consumed tokens to AI credits
 5. **Report usage**: Call Usage Tracker SDK `report_usage()` — the SDK handles guaranteed at-least-once delivery internally (transactional outbox, retries)
 
-Note: Gateway may consume more AI credits than the tenant's allocated quota because token consumption cannot be predicted before the request completes. The pre-request quota check is a best-effort gate — actual consumption may exceed the quota. This is expected behavior. Usage Tracker unavailability does not block request processing — the SDK buffers records and delivers them when the tracker becomes available.
+**Known limitation — best-effort gate**: The `check_quota()` → proceed → `report_usage()` sequence is non-atomic. Under concurrent load, multiple requests may pass `check_quota()` before any `report_usage()` completes, allowing a tenant to exceed their limit by N×budget (where N = concurrent in-flight requests). Whether Gateway should own enforcement (atomic reserve + settle) or metering only is an open question — see PRD section 13 "Quota enforcement ownership and component". Usage Tracker unavailability does not block request processing — the SDK buffers records and delivers them when the tracker becomes available.
 
 #### Batch Processing
 
