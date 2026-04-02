@@ -99,12 +99,7 @@ impl RateLimiter {
     ///
     /// # Errors
     /// Returns `DomainError::RateLimitExceeded` with Retry-After seconds when exhausted.
-    pub fn try_consume(
-        &self,
-        key: &str,
-        config: &RateLimitConfig,
-        instance_uri: &str,
-    ) -> Result<(), DomainError> {
+    pub fn try_consume(&self, key: &str, config: &RateLimitConfig) -> Result<(), DomainError> {
         let cost = config.cost as f64;
         let mut bucket = self
             .buckets
@@ -117,7 +112,6 @@ impl RateLimiter {
             let retry_after = bucket.retry_after_secs(cost);
             Err(DomainError::RateLimitExceeded {
                 detail: format!("rate limit exceeded for key: {key}"),
-                instance: instance_uri.to_string(),
                 retry_after_secs: Some(retry_after),
             })
         }
@@ -149,7 +143,7 @@ mod tests {
         let limiter = RateLimiter::new();
         let config = make_config(10, Window::Second, None);
         for _ in 0..10 {
-            assert!(limiter.try_consume("test", &config, "/test").is_ok());
+            assert!(limiter.try_consume("test", &config).is_ok());
         }
     }
 
@@ -157,9 +151,9 @@ mod tests {
     fn denies_when_exhausted() {
         let limiter = RateLimiter::new();
         let config = make_config(2, Window::Second, None);
-        assert!(limiter.try_consume("test", &config, "/test").is_ok());
-        assert!(limiter.try_consume("test", &config, "/test").is_ok());
-        let err = limiter.try_consume("test", &config, "/test").unwrap_err();
+        assert!(limiter.try_consume("test", &config).is_ok());
+        assert!(limiter.try_consume("test", &config).is_ok());
+        let err = limiter.try_consume("test", &config).unwrap_err();
         assert!(matches!(err, DomainError::RateLimitExceeded { .. }));
     }
 
@@ -167,8 +161,8 @@ mod tests {
     fn retry_after_is_calculated() {
         let limiter = RateLimiter::new();
         let config = make_config(1, Window::Minute, None);
-        assert!(limiter.try_consume("test", &config, "/test").is_ok());
-        match limiter.try_consume("test", &config, "/test") {
+        assert!(limiter.try_consume("test", &config).is_ok());
+        match limiter.try_consume("test", &config) {
             Err(DomainError::RateLimitExceeded {
                 retry_after_secs, ..
             }) => {
@@ -185,28 +179,28 @@ mod tests {
         let limiter = RateLimiter::new();
         let config = make_config(1, Window::Second, Some(5));
         for _ in 0..5 {
-            assert!(limiter.try_consume("test", &config, "/test").is_ok());
+            assert!(limiter.try_consume("test", &config).is_ok());
         }
-        assert!(limiter.try_consume("test", &config, "/test").is_err());
+        assert!(limiter.try_consume("test", &config).is_err());
     }
 
     #[test]
     fn separate_keys_independent() {
         let limiter = RateLimiter::new();
         let config = make_config(1, Window::Second, None);
-        assert!(limiter.try_consume("key-a", &config, "/test").is_ok());
-        assert!(limiter.try_consume("key-b", &config, "/test").is_ok());
-        assert!(limiter.try_consume("key-a", &config, "/test").is_err());
-        assert!(limiter.try_consume("key-b", &config, "/test").is_err());
+        assert!(limiter.try_consume("key-a", &config).is_ok());
+        assert!(limiter.try_consume("key-b", &config).is_ok());
+        assert!(limiter.try_consume("key-a", &config).is_err());
+        assert!(limiter.try_consume("key-b", &config).is_err());
     }
 
     #[test]
     fn purge_removes_stale_entries() {
         let limiter = RateLimiter::new();
         let config = make_config(10, Window::Second, None);
-        limiter.try_consume("a", &config, "/test").unwrap();
-        limiter.try_consume("b", &config, "/test").unwrap();
-        limiter.try_consume("c", &config, "/test").unwrap();
+        limiter.try_consume("a", &config).unwrap();
+        limiter.try_consume("b", &config).unwrap();
+        limiter.try_consume("c", &config).unwrap();
 
         let active: HashSet<String> = ["a", "c"].iter().map(|s| (*s).into()).collect();
         limiter.purge_keys(&active);
@@ -221,10 +215,8 @@ mod tests {
     fn remove_key_deletes_single_bucket() {
         let limiter = RateLimiter::new();
         let config = make_config(10, Window::Second, None);
-        limiter
-            .try_consume("upstream:aaa", &config, "/test")
-            .unwrap();
-        limiter.try_consume("route:bbb", &config, "/test").unwrap();
+        limiter.try_consume("upstream:aaa", &config).unwrap();
+        limiter.try_consume("route:bbb", &config).unwrap();
 
         limiter.remove_key("upstream:aaa");
 
@@ -244,8 +236,8 @@ mod tests {
     fn purge_with_empty_set_removes_all() {
         let limiter = RateLimiter::new();
         let config = make_config(10, Window::Second, None);
-        limiter.try_consume("x", &config, "/test").unwrap();
-        limiter.try_consume("y", &config, "/test").unwrap();
+        limiter.try_consume("x", &config).unwrap();
+        limiter.try_consume("y", &config).unwrap();
 
         limiter.purge_keys(&HashSet::new());
 

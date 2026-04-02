@@ -13,6 +13,7 @@ use tracing::Instrument;
 
 use crate::api::rest::error::error_response;
 use crate::module::AppState;
+use crate::request_instance::RequestInstance;
 
 /// Proxy handler for `/oagw/v1/proxy/{alias}/{path:.*}`.
 ///
@@ -29,6 +30,7 @@ pub async fn proxy_handler(
 ) -> Result<Response, Response> {
     let max_body_size = state.config.max_body_size_bytes;
     let (mut parts, body) = req.into_parts();
+    let request_instance = RequestInstance::from_uri(&parts.uri);
 
     // Detect WebSocket upgrade and extract the hyper upgrade handle.
     // This must happen before body consumption — the OnUpgrade future is
@@ -37,20 +39,19 @@ pub async fn proxy_handler(
 
     // RFC 6455 §4.1: WebSocket upgrade MUST be GET with no body.
     if is_upgrade {
-        let path = parts.uri.path().to_string();
         if parts.method != http::Method::GET {
-            return Err(error_response(DomainError::Validation {
-                detail: "WebSocket upgrade requires GET method".into(),
-                instance: path,
-            }));
+            return Err(error_response(
+                DomainError::validation("WebSocket upgrade requires GET method"),
+                request_instance,
+            ));
         }
         if parts.headers.contains_key(http::header::CONTENT_LENGTH)
             || parts.headers.contains_key(http::header::TRANSFER_ENCODING)
         {
-            return Err(error_response(DomainError::Validation {
-                detail: "WebSocket upgrade request must not contain a body".into(),
-                instance: path,
-            }));
+            return Err(error_response(
+                DomainError::validation("WebSocket upgrade request must not contain a body"),
+                request_instance,
+            ));
         }
     }
 
@@ -63,43 +64,47 @@ pub async fn proxy_handler(
     // Parse alias from the URI to validate it's present.
     let path = parts.uri.path();
     let prefix = "/oagw/v1/proxy/";
-    let remaining = path.strip_prefix(prefix).ok_or_else(|| {
-        error_response(DomainError::Validation {
-            detail: "invalid proxy path".into(),
-            instance: path.to_string(),
-        })
-    })?;
+    let Some(remaining) = path.strip_prefix(prefix) else {
+        return Err(error_response(
+            DomainError::validation("invalid proxy path"),
+            request_instance,
+        ));
+    };
 
     // Validate alias is not empty.
     let alias_end = remaining.find('/').unwrap_or(remaining.len());
     if alias_end == 0 {
-        return Err(error_response(DomainError::Validation {
-            detail: "missing alias in proxy path".into(),
-            instance: path.to_string(),
-        }));
+        return Err(error_response(
+            DomainError::validation("missing alias in proxy path"),
+            request_instance,
+        ));
     }
 
     // Validate Content-Length if present (skip for WebSocket — no body).
     if !is_upgrade && let Some(cl) = parts.headers.get(http::header::CONTENT_LENGTH) {
-        let cl_str = cl.to_str().map_err(|_| {
-            error_response(DomainError::Validation {
-                detail: "invalid Content-Length header".into(),
-                instance: path.to_string(),
-            })
-        })?;
-        let cl_val: usize = cl_str.parse().map_err(|_| {
-            error_response(DomainError::Validation {
-                detail: format!("Content-Length is not a valid integer: '{cl_str}'"),
-                instance: path.to_string(),
-            })
-        })?;
+        let Ok(cl_str) = cl.to_str() else {
+            return Err(error_response(
+                DomainError::validation("invalid Content-Length header"),
+                request_instance,
+            ));
+        };
+        let Ok(cl_val) = cl_str.parse::<usize>() else {
+            return Err(error_response(
+                DomainError::validation(format!(
+                    "Content-Length is not a valid integer: '{cl_str}'"
+                )),
+                request_instance,
+            ));
+        };
         if cl_val > max_body_size {
-            return Err(error_response(DomainError::PayloadTooLarge {
-                detail: format!(
-                    "request body of {cl_val} bytes exceeds maximum of {max_body_size} bytes"
-                ),
-                instance: path.to_string(),
-            }));
+            return Err(error_response(
+                DomainError::PayloadTooLarge {
+                    detail: format!(
+                        "request body of {cl_val} bytes exceeds maximum of {max_body_size} bytes"
+                    ),
+                },
+                request_instance,
+            ));
         }
     }
 
@@ -108,14 +113,16 @@ pub async fn proxy_handler(
     let body_bytes = if is_upgrade {
         Bytes::new()
     } else {
-        axum::body::to_bytes(body, max_body_size)
-            .await
-            .map_err(|_| {
-                error_response(DomainError::PayloadTooLarge {
+        let Ok(bb) = axum::body::to_bytes(body, max_body_size).await else {
+            return Err(error_response(
+                DomainError::PayloadTooLarge {
                     detail: format!("request body exceeds maximum of {max_body_size} bytes"),
-                    instance: path.to_string(),
-                })
-            })?
+                },
+                request_instance,
+            ));
+        };
+
+        bb
     };
 
     // Strip the proxy prefix from the URI so the DP receives /{alias}/{path}?query.
@@ -124,46 +131,56 @@ pub async fn proxy_handler(
     } else {
         format!("/{remaining}")
     };
-    parts.uri = new_uri_str.parse().map_err(|_| {
-        error_response(DomainError::Validation {
-            detail: "failed to parse proxy URI".into(),
-            instance: path.to_string(),
-        })
-    })?;
+
+    match new_uri_str.parse() {
+        Ok(uri) => parts.uri = uri,
+        Err(_) => {
+            return Err(error_response(
+                DomainError::validation("failed to parse proxy URI"),
+                request_instance,
+            ));
+        }
+    };
 
     // Build http::Request<Body> for the DP service.
     let sdk_body = oagw_sdk::Body::from(body_bytes);
     let proxy_req = http::Request::from_parts(parts, sdk_body);
 
     // Execute proxy pipeline.
-    let proxy_resp = state
+    let proxy_resp = match state
         .dp
-        .proxy_request(ctx, proxy_req)
+        .proxy_request(ctx, proxy_req, request_instance.clone())
         .await
-        .map_err(error_response)?;
+    {
+        Ok(proxy_resp) => proxy_resp,
+        Err(err) => return Err(error_response(err, request_instance)),
+    };
 
     // Convert http::Response<oagw_sdk::Body> to axum Response.
     let (mut resp_parts, sdk_body) = proxy_resp.into_parts();
 
     // Handle WebSocket 101 Switching Protocols.
     if resp_parts.status == StatusCode::SWITCHING_PROTOCOLS {
-        let bridge = resp_parts
+        let Some(bridge) = resp_parts
             .extensions
             .remove::<WebSocketBridgeHandle>()
             .and_then(|h| h.take())
-            .ok_or_else(|| {
-                error_response(DomainError::Internal {
-                    message: "101 Switching Protocols but WebSocket bridge handle is missing"
-                        .into(),
-                })
-            })?;
-        let on_upgrade = on_upgrade.ok_or_else(|| {
-            error_response(DomainError::ProtocolError {
-                detail: "WebSocket upgrade requested but connection does not support upgrades"
-                    .into(),
-                instance: String::new(),
-            })
-        })?;
+        else {
+            return Err(error_response(
+                DomainError::internal(
+                    "101 Switching Protocols but WebSocket bridge handle is missing",
+                ),
+                request_instance,
+            ));
+        };
+        let Some(on_upgrade) = on_upgrade else {
+            return Err(error_response(
+                DomainError::protocol(
+                    "WebSocket upgrade requested but connection does not support upgrades",
+                ),
+                request_instance,
+            ));
+        };
 
         // Build the 101 response to return to hyper (triggers the upgrade).
         let mut builder = Response::builder().status(StatusCode::SWITCHING_PROTOCOLS);
@@ -173,9 +190,10 @@ pub async fn proxy_handler(
         // Data now originates from upstream — consistent with the non-upgrade path.
         builder = builder.header("x-oagw-error-source", ErrorSource::Upstream.as_str());
         let response = builder.body(Body::empty()).map_err(|e| {
-            error_response(DomainError::Internal {
-                message: format!("failed to build WebSocket upgrade response: {e}"),
-            })
+            error_response(
+                DomainError::internal(format!("failed to build WebSocket upgrade response: {e}")),
+                request_instance,
+            )
         })?;
 
         // Spawn the bidirectional bridge task. It awaits the upgrade
@@ -220,10 +238,12 @@ pub async fn proxy_handler(
     let body = Body::from_stream(sdk_body.into_stream());
 
     builder.body(body).map_err(|e| {
-        error_response(DomainError::DownstreamError {
-            detail: format!("failed to build response: {e}"),
-            instance: String::new(),
-        })
+        error_response(
+            DomainError::DownstreamError {
+                detail: format!("failed to build response: {e}"),
+            },
+            request_instance,
+        )
     })
 }
 

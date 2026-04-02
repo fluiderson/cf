@@ -15,6 +15,7 @@ pub mod api;
 pub mod config;
 pub(crate) mod domain;
 pub(crate) mod infra;
+pub(crate) mod request_instance;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_support;

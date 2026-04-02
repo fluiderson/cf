@@ -498,7 +498,6 @@ mod tests {
     fn gateway_rate_limit_maps_to_rate_limited() {
         let err = ServiceGatewayError::RateLimitExceeded {
             detail: "too many requests".into(),
-            instance: "/test".into(),
             retry_after_secs: Some(60),
         };
         let mapped: LlmProviderError = err.into();
@@ -514,7 +513,6 @@ mod tests {
     fn gateway_connection_timeout_maps_to_timeout() {
         let err = ServiceGatewayError::ConnectionTimeout {
             detail: "timed out".into(),
-            instance: "/test".into(),
         };
         let mapped: LlmProviderError = err.into();
         assert!(matches!(mapped, LlmProviderError::Timeout));
@@ -524,7 +522,6 @@ mod tests {
     fn gateway_request_timeout_maps_to_timeout() {
         let err = ServiceGatewayError::RequestTimeout {
             detail: "timed out".into(),
-            instance: "/test".into(),
         };
         let mapped: LlmProviderError = err.into();
         assert!(matches!(mapped, LlmProviderError::Timeout));
@@ -534,7 +531,6 @@ mod tests {
     fn gateway_upstream_disabled_maps_to_unavailable() {
         let err = ServiceGatewayError::UpstreamDisabled {
             detail: "disabled".into(),
-            instance: "/test".into(),
         };
         let mapped: LlmProviderError = err.into();
         assert!(matches!(mapped, LlmProviderError::ProviderUnavailable));
@@ -544,7 +540,6 @@ mod tests {
     fn gateway_downstream_error_maps_to_provider_error() {
         let err = ServiceGatewayError::DownstreamError {
             detail: "resp_xyz789 failed at https://api.example.com".into(),
-            instance: "/test".into(),
         };
         let mapped: LlmProviderError = err.into();
         match mapped {

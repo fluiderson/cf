@@ -2265,7 +2265,6 @@ mod tests {
     async fn oagw_rate_limit_error() {
         let gw = MockGateway::returning_error(ServiceGatewayError::RateLimitExceeded {
             detail: "too many requests".into(),
-            instance: "/test".into(),
             retry_after_secs: Some(30),
         });
         let provider = OpenAiResponsesProvider::new(gw);
@@ -2288,7 +2287,6 @@ mod tests {
     async fn oagw_connection_timeout_error() {
         let gw = MockGateway::returning_error(ServiceGatewayError::ConnectionTimeout {
             detail: "timed out".into(),
-            instance: "/test".into(),
         });
         let provider = OpenAiResponsesProvider::new(gw);
 
@@ -2305,7 +2303,6 @@ mod tests {
     async fn oagw_upstream_disabled_error() {
         let gw = MockGateway::returning_error(ServiceGatewayError::UpstreamDisabled {
             detail: "disabled".into(),
-            instance: "/test".into(),
         });
         let provider = OpenAiResponsesProvider::new(gw);
 

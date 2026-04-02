@@ -1,24 +1,19 @@
-use modkit::api::problem::Problem;
 use uuid::Uuid;
 
+use crate::domain::error::DomainError;
 use crate::domain::gts_helpers;
 use crate::domain::model::ListQuery;
 
 /// Parse a GTS identifier, verifying that its schema prefix matches
 /// `expected_schema` (e.g. `UPSTREAM_SCHEMA`). Returns a validation
-/// `Problem` if the prefix does not match.
-#[allow(clippy::result_large_err)]
-pub fn parse_gts_id(gts_str: &str, expected_schema: &str, instance: &str) -> Result<Uuid, Problem> {
-    let (schema, uuid) = gts_helpers::parse_resource_gts(gts_str).map_err(Problem::from)?;
+/// `DomainError` if the prefix does not match.
+pub fn parse_gts_id(gts_str: &str, expected_schema: &str) -> Result<Uuid, DomainError> {
+    let (schema, uuid) = gts_helpers::parse_resource_gts(gts_str)?;
     let expected_prefix = expected_schema.trim_end_matches('~');
     if schema != expected_prefix {
-        return Err(Problem::new(
-            http::StatusCode::BAD_REQUEST,
-            "Validation Error",
-            format!("expected GTS schema '{expected_schema}' but got '{schema}~'"),
-        )
-        .with_type("gts.x.core.errors.err.v1~x.oagw.validation.error.v1")
-        .with_instance(instance));
+        return Err(DomainError::validation(format!(
+            "expected GTS schema '{expected_schema}' but got '{schema}~'"
+        )));
     }
     Ok(uuid)
 }

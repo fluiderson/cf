@@ -11,6 +11,7 @@ use crate::api::rest::extractors::{PaginationQuery, parse_gts_id};
 use crate::domain::gts_helpers as gts;
 use crate::domain::model::Upstream;
 use crate::module::AppState;
+use crate::request_instance::RequestInstance;
 
 fn to_response(u: Upstream) -> UpstreamResponse {
     UpstreamResponse {
@@ -32,13 +33,14 @@ fn to_response(u: Upstream) -> UpstreamResponse {
 pub async fn create_upstream(
     Extension(state): Extension<AppState>,
     Extension(ctx): Extension<SecurityContext>,
+    request_instance: RequestInstance,
     Json(req): Json<CreateUpstreamRequest>,
 ) -> Result<impl IntoResponse, Problem> {
     let upstream = state
         .cp
         .create_upstream(&ctx, req.into())
         .await
-        .map_err(|e| domain_error_to_problem(e, "/oagw/v1/upstreams"))?;
+        .map_err(|e| domain_error_to_problem(e, request_instance))?;
     // Defensive no-op: new IDs have no cache entry, but keeps CRUD handlers uniform.
     state.backend_selector.invalidate(upstream.id);
     Ok((StatusCode::CREATED, Json(to_response(upstream))))
@@ -47,21 +49,25 @@ pub async fn create_upstream(
 pub async fn get_upstream(
     Extension(state): Extension<AppState>,
     Extension(ctx): Extension<SecurityContext>,
+    request_instance: RequestInstance,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, Problem> {
-    let instance = format!("/oagw/v1/upstreams/{id}");
-    let uuid = parse_gts_id(&id, gts::UPSTREAM_SCHEMA, &instance)?;
+    let uuid = match parse_gts_id(&id, gts::UPSTREAM_SCHEMA) {
+        Ok(uuid) => uuid,
+        Err(e) => return Err(domain_error_to_problem(e, request_instance)),
+    };
     let upstream = state
         .cp
         .get_upstream(&ctx, uuid)
         .await
-        .map_err(|e| domain_error_to_problem(e, &instance))?;
+        .map_err(|e| domain_error_to_problem(e, request_instance))?;
     Ok(Json(to_response(upstream)))
 }
 
 pub async fn list_upstreams(
     Extension(state): Extension<AppState>,
     Extension(ctx): Extension<SecurityContext>,
+    request_instance: RequestInstance,
     Query(pagination): Query<PaginationQuery>,
 ) -> Result<impl IntoResponse, Problem> {
     let query = pagination.to_list_query();
@@ -69,7 +75,7 @@ pub async fn list_upstreams(
         .cp
         .list_upstreams(&ctx, &query)
         .await
-        .map_err(|e| domain_error_to_problem(e, "/oagw/v1/upstreams"))?;
+        .map_err(|e| domain_error_to_problem(e, request_instance))?;
     let response: Vec<UpstreamResponse> = upstreams.into_iter().map(to_response).collect();
     Ok(Json(response))
 }
@@ -77,16 +83,19 @@ pub async fn list_upstreams(
 pub async fn update_upstream(
     Extension(state): Extension<AppState>,
     Extension(ctx): Extension<SecurityContext>,
+    request_instance: RequestInstance,
     Path(id): Path<String>,
     Json(req): Json<UpdateUpstreamRequest>,
 ) -> Result<impl IntoResponse, Problem> {
-    let instance = format!("/oagw/v1/upstreams/{id}");
-    let uuid = parse_gts_id(&id, gts::UPSTREAM_SCHEMA, &instance)?;
+    let uuid = match parse_gts_id(&id, gts::UPSTREAM_SCHEMA) {
+        Ok(uuid) => uuid,
+        Err(e) => return Err(domain_error_to_problem(e, request_instance)),
+    };
     let upstream = state
         .cp
         .update_upstream(&ctx, uuid, req.into())
         .await
-        .map_err(|e| domain_error_to_problem(e, &instance))?;
+        .map_err(|e| domain_error_to_problem(e, request_instance))?;
     state.backend_selector.invalidate(upstream.id);
     Ok(Json(to_response(upstream)))
 }
@@ -94,15 +103,19 @@ pub async fn update_upstream(
 pub async fn delete_upstream(
     Extension(state): Extension<AppState>,
     Extension(ctx): Extension<SecurityContext>,
+    request_instance: RequestInstance,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, Problem> {
-    let instance = format!("/oagw/v1/upstreams/{id}");
-    let uuid = parse_gts_id(&id, gts::UPSTREAM_SCHEMA, &instance)?;
+    let uuid = match parse_gts_id(&id, gts::UPSTREAM_SCHEMA) {
+        Ok(uuid) => uuid,
+        Err(e) => return Err(domain_error_to_problem(e, request_instance)),
+    };
+
     state
         .cp
         .delete_upstream(&ctx, uuid)
         .await
-        .map_err(|e| domain_error_to_problem(e, &instance))?;
+        .map_err(|e| domain_error_to_problem(e, request_instance))?;
     state.backend_selector.invalidate(uuid);
     state.dp.remove_rate_limit_key(&format!("upstream:{uuid}"));
     Ok(StatusCode::NO_CONTENT)

@@ -11,6 +11,7 @@ use crate::api::rest::extractors::parse_gts_id;
 use crate::domain::gts_helpers as gts;
 use crate::domain::model::Route;
 use crate::module::AppState;
+use crate::request_instance::RequestInstance;
 
 fn to_response(r: Route) -> RouteResponse {
     RouteResponse {
@@ -30,30 +31,36 @@ fn to_response(r: Route) -> RouteResponse {
 pub async fn create_route(
     Extension(state): Extension<AppState>,
     Extension(ctx): Extension<SecurityContext>,
+    request_instance: RequestInstance,
     Json(req): Json<CreateRouteRequest>,
 ) -> Result<impl IntoResponse, Problem> {
-    let instance = "/oagw/v1/routes";
-    let upstream_uuid = parse_gts_id(&req.upstream_id, gts::UPSTREAM_SCHEMA, instance)?;
+    let upstream_uuid = match parse_gts_id(&req.upstream_id, gts::UPSTREAM_SCHEMA) {
+        Ok(uuid) => uuid,
+        Err(e) => return Err(domain_error_to_problem(e, request_instance)),
+    };
     let route = state
         .cp
         .create_route(&ctx, (upstream_uuid, req).into())
         .await
-        .map_err(|e| domain_error_to_problem(e, instance))?;
+        .map_err(|e| domain_error_to_problem(e, request_instance))?;
     Ok((StatusCode::CREATED, Json(to_response(route))))
 }
 
 pub async fn get_route(
     Extension(state): Extension<AppState>,
     Extension(ctx): Extension<SecurityContext>,
+    request_instance: RequestInstance,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, Problem> {
-    let instance = format!("/oagw/v1/routes/{id}");
-    let uuid = parse_gts_id(&id, gts::ROUTE_SCHEMA, &instance)?;
+    let uuid = match parse_gts_id(&id, gts::ROUTE_SCHEMA) {
+        Ok(uuid) => uuid,
+        Err(e) => return Err(domain_error_to_problem(e, request_instance)),
+    };
     let route = state
         .cp
         .get_route(&ctx, uuid)
         .await
-        .map_err(|e| domain_error_to_problem(e, &instance))?;
+        .map_err(|e| domain_error_to_problem(e, request_instance))?;
     Ok(Json(to_response(route)))
 }
 
@@ -76,14 +83,18 @@ fn default_limit() -> u32 {
 pub async fn list_routes(
     Extension(state): Extension<AppState>,
     Extension(ctx): Extension<SecurityContext>,
+    request_instance: RequestInstance,
     Query(params): Query<ListRoutesQuery>,
 ) -> Result<impl IntoResponse, Problem> {
-    let instance = "/oagw/v1/routes";
-    let upstream_uuid = params
+    let upstream_uuid = match params
         .upstream_id
         .as_deref()
-        .map(|id| parse_gts_id(id, gts::UPSTREAM_SCHEMA, instance))
-        .transpose()?;
+        .map(|id| parse_gts_id(id, gts::UPSTREAM_SCHEMA))
+        .transpose()
+    {
+        Ok(uuid) => uuid,
+        Err(e) => return Err(domain_error_to_problem(e, request_instance)),
+    };
     let query = crate::domain::model::ListQuery {
         top: params.limit.min(100),
         skip: params.offset,
@@ -92,7 +103,7 @@ pub async fn list_routes(
         .cp
         .list_routes(&ctx, upstream_uuid, &query)
         .await
-        .map_err(|e| domain_error_to_problem(e, instance))?;
+        .map_err(|e| domain_error_to_problem(e, request_instance))?;
     let response: Vec<RouteResponse> = routes.into_iter().map(to_response).collect();
     Ok(Json(response))
 }
@@ -100,31 +111,37 @@ pub async fn list_routes(
 pub async fn update_route(
     Extension(state): Extension<AppState>,
     Extension(ctx): Extension<SecurityContext>,
+    request_instance: RequestInstance,
     Path(id): Path<String>,
     Json(req): Json<UpdateRouteRequest>,
 ) -> Result<impl IntoResponse, Problem> {
-    let instance = format!("/oagw/v1/routes/{id}");
-    let uuid = parse_gts_id(&id, gts::ROUTE_SCHEMA, &instance)?;
+    let uuid = match parse_gts_id(&id, gts::ROUTE_SCHEMA) {
+        Ok(uuid) => uuid,
+        Err(e) => return Err(domain_error_to_problem(e, request_instance)),
+    };
     let route = state
         .cp
         .update_route(&ctx, uuid, req.into())
         .await
-        .map_err(|e| domain_error_to_problem(e, &instance))?;
+        .map_err(|e| domain_error_to_problem(e, request_instance))?;
     Ok(Json(to_response(route)))
 }
 
 pub async fn delete_route(
     Extension(state): Extension<AppState>,
     Extension(ctx): Extension<SecurityContext>,
+    request_instance: RequestInstance,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, Problem> {
-    let instance = format!("/oagw/v1/routes/{id}");
-    let uuid = parse_gts_id(&id, gts::ROUTE_SCHEMA, &instance)?;
+    let uuid = match parse_gts_id(&id, gts::ROUTE_SCHEMA) {
+        Ok(uuid) => uuid,
+        Err(e) => return Err(domain_error_to_problem(e, request_instance)),
+    };
     state
         .cp
         .delete_route(&ctx, uuid)
         .await
-        .map_err(|e| domain_error_to_problem(e, &instance))?;
+        .map_err(|e| domain_error_to_problem(e, request_instance))?;
     state.dp.remove_rate_limit_key(&format!("route:{uuid}"));
     Ok(StatusCode::NO_CONTENT)
 }
