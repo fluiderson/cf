@@ -3215,9 +3215,7 @@ fn test_cors_config() -> CorsConfig {
         enabled: true,
         allowed_origins: vec!["https://example.com".to_string()],
         allowed_methods: vec![CorsHttpMethod::Get, CorsHttpMethod::Post],
-        allowed_headers: vec!["content-type".to_string(), "authorization".to_string()],
         expose_headers: vec!["x-request-id".to_string()],
-        max_age: 3600,
         allow_credentials: false,
     }
 }
@@ -3371,133 +3369,6 @@ async fn cors_actual_request_includes_headers() {
     assert!(
         headers.get(http::header::VARY).is_some(),
         "Vary header must be present"
-    );
-}
-
-// CORS: Actual request with disallowed origin gets no CORS headers.
-#[tokio::test]
-async fn cors_actual_request_disallowed_origin_no_cors_headers() {
-    let mut guard = MockGuard::new();
-    guard.mock(
-        "GET",
-        "/api/data",
-        MockResponse {
-            status: 200,
-            headers: vec![("content-type".into(), "application/json".into())],
-            body: MockBody::Json(json!({"ok": true})),
-        },
-    );
-
-    let h = AppHarness::builder().build().await;
-    setup_cors_upstream(&h, &guard, "cors-bad-origin", Some(test_cors_config())).await;
-
-    let req = http::Request::builder()
-        .method(Method::GET)
-        .uri(format!("/cors-bad-origin{}", guard.path("/api/data")))
-        .header("origin", "https://evil.com")
-        .body(Body::Empty)
-        .unwrap();
-
-    let response = h
-        .facade()
-        .proxy_request(h.security_context().clone(), req)
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(
-        response
-            .headers()
-            .get("access-control-allow-origin")
-            .is_none(),
-        "disallowed origin should not receive CORS headers"
-    );
-}
-
-// CORS: Preflight with allowed origin/method returns 204 with CORS headers.
-#[tokio::test]
-async fn cors_preflight_allowed_returns_204() {
-    let guard = MockGuard::new();
-
-    let h = AppHarness::builder().build().await;
-    setup_cors_upstream(&h, &guard, "cors-preflight", Some(test_cors_config())).await;
-
-    let req = http::Request::builder()
-        .method(Method::OPTIONS)
-        .uri(format!("/cors-preflight{}", guard.path("/api/data")))
-        .header("origin", "https://example.com")
-        .header("access-control-request-method", "POST")
-        .body(Body::Empty)
-        .unwrap();
-
-    let response = h
-        .facade()
-        .proxy_request(h.security_context().clone(), req)
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-
-    let headers = response.headers();
-    assert_eq!(
-        headers.get("access-control-allow-origin").unwrap(),
-        "https://example.com"
-    );
-    assert!(
-        headers.get("access-control-allow-methods").is_some(),
-        "preflight must include allow-methods"
-    );
-    assert_eq!(headers.get("access-control-max-age").unwrap(), "3600");
-    assert!(
-        headers.get(http::header::VARY).is_some(),
-        "preflight must include Vary"
-    );
-}
-
-// CORS: Preflight with disallowed origin returns 403.
-#[tokio::test]
-async fn cors_preflight_rejected_origin_returns_403() {
-    let guard = MockGuard::new();
-
-    let h = AppHarness::builder().build().await;
-    setup_cors_upstream(&h, &guard, "cors-pf-bad-origin", Some(test_cors_config())).await;
-
-    let req = http::Request::builder()
-        .method(Method::OPTIONS)
-        .uri(format!("/cors-pf-bad-origin{}", guard.path("/api/data")))
-        .header("origin", "https://evil.com")
-        .header("access-control-request-method", "GET")
-        .body(Body::Empty)
-        .unwrap();
-
-    let response = h
-        .facade()
-        .proxy_request(h.security_context().clone(), req)
-        .await;
-    assert!(response.is_err(), "rejected preflight should return error");
-}
-
-// CORS: Preflight with disallowed method returns 403.
-#[tokio::test]
-async fn cors_preflight_rejected_method_returns_403() {
-    let guard = MockGuard::new();
-
-    let h = AppHarness::builder().build().await;
-    setup_cors_upstream(&h, &guard, "cors-pf-bad-method", Some(test_cors_config())).await;
-
-    let req = http::Request::builder()
-        .method(Method::OPTIONS)
-        .uri(format!("/cors-pf-bad-method{}", guard.path("/api/data")))
-        .header("origin", "https://example.com")
-        .header("access-control-request-method", "DELETE")
-        .body(Body::Empty)
-        .unwrap();
-
-    let response = h
-        .facade()
-        .proxy_request(h.security_context().clone(), req)
-        .await;
-    assert!(
-        response.is_err(),
-        "preflight with disallowed method should return error"
     );
 }
 
@@ -3717,9 +3588,7 @@ async fn cors_route_inherit_merges_origins() {
         enabled: true,
         allowed_origins: vec!["https://other.com".to_string()],
         allowed_methods: vec![CorsHttpMethod::Get, CorsHttpMethod::Post],
-        allowed_headers: vec!["content-type".to_string(), "authorization".to_string()],
         expose_headers: vec!["x-request-id".to_string()],
-        max_age: 3600,
         allow_credentials: false,
     };
 
@@ -3783,20 +3652,19 @@ async fn cors_route_inherit_merges_origins() {
     );
 }
 
-// CORS: Preflight with disallowed request header returns error.
+// CORS: Disallowed origin is rejected before reaching upstream.
 #[tokio::test]
-async fn cors_preflight_rejected_header_returns_error() {
+async fn cors_actual_request_disallowed_origin_rejected_before_upstream() {
     let guard = MockGuard::new();
+    // No mock registered — if the upstream is called, the request will fail differently.
 
     let h = AppHarness::builder().build().await;
-    setup_cors_upstream(&h, &guard, "cors-pf-bad-hdr", Some(test_cors_config())).await;
+    setup_cors_upstream(&h, &guard, "cors-reject-origin", Some(test_cors_config())).await;
 
     let req = http::Request::builder()
-        .method(Method::OPTIONS)
-        .uri(format!("/cors-pf-bad-hdr{}", guard.path("/api/data")))
-        .header("origin", "https://example.com")
-        .header("access-control-request-method", "GET")
-        .header("access-control-request-headers", "x-custom-forbidden")
+        .method(Method::GET)
+        .uri(format!("/cors-reject-origin{}", guard.path("/api/data")))
+        .header("origin", "https://evil.com")
         .body(Body::Empty)
         .unwrap();
 
@@ -3806,7 +3674,76 @@ async fn cors_preflight_rejected_header_returns_error() {
         .await;
     assert!(
         response.is_err(),
-        "preflight with disallowed request header should return error"
+        "disallowed origin on actual request should be rejected before reaching upstream"
+    );
+}
+
+// CORS: Disallowed method is rejected before reaching upstream.
+#[tokio::test]
+async fn cors_actual_request_disallowed_method_rejected_before_upstream() {
+    let guard = MockGuard::new();
+    // No mock registered — if the upstream is called, the request will fail differently.
+
+    let h = AppHarness::builder().build().await;
+    let ctx = h.security_context().clone();
+
+    // Route allows DELETE but CORS config only allows GET and POST.
+    let cors = test_cors_config(); // allowed_methods: [Get, Post]
+
+    let mut builder = CreateUpstreamRequest::builder(
+        Server {
+            endpoints: vec![Endpoint {
+                scheme: Scheme::Http,
+                host: "127.0.0.1".into(),
+                port: h.mock_port(),
+            }],
+        },
+        "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+    )
+    .alias("cors-reject-method");
+    builder = builder.cors(cors);
+
+    let upstream = h
+        .facade()
+        .create_upstream(ctx.clone(), builder.build())
+        .await
+        .unwrap();
+
+    h.facade()
+        .create_route(
+            ctx.clone(),
+            CreateRouteRequest::builder(
+                upstream.id,
+                MatchRules {
+                    http: Some(HttpMatch {
+                        methods: vec![HttpMethod::Get, HttpMethod::Post, HttpMethod::Delete],
+                        path: guard.path("/api/data"),
+                        query_allowlist: vec![],
+                        path_suffix_mode: PathSuffixMode::Disabled,
+                    }),
+                    grpc: None,
+                },
+            )
+            .build(),
+        )
+        .await
+        .unwrap();
+
+    // DELETE is allowed by the route but not by CORS — should be rejected.
+    let req = http::Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/cors-reject-method{}", guard.path("/api/data")))
+        .header("origin", "https://example.com")
+        .body(Body::Empty)
+        .unwrap();
+
+    let response = h
+        .facade()
+        .proxy_request(h.security_context().clone(), req)
+        .await;
+    assert!(
+        response.is_err(),
+        "disallowed method on actual request should be rejected before reaching upstream"
     );
 }
 
@@ -3856,7 +3793,7 @@ async fn cors_multiple_specific_origins() {
         "https://beta.com"
     );
 
-    // Non-matching origin gets no CORS headers.
+    // Non-matching origin is rejected before reaching upstream.
     let req = http::Request::builder()
         .method(Method::GET)
         .uri(format!("/cors-multi{}", guard.path("/api/data")))
@@ -3867,15 +3804,10 @@ async fn cors_multiple_specific_origins() {
     let response = h
         .facade()
         .proxy_request(h.security_context().clone(), req)
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+        .await;
     assert!(
-        response
-            .headers()
-            .get("access-control-allow-origin")
-            .is_none(),
-        "non-matching origin should not get CORS headers"
+        response.is_err(),
+        "non-matching origin should be rejected with 403"
     );
 }
 

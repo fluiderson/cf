@@ -6591,12 +6591,6 @@
           "allow_credentials": {
             "type": "boolean"
           },
-          "allowed_headers": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
           "allowed_methods": {
             "type": "array",
             "items": {
@@ -6617,11 +6611,6 @@
             "items": {
               "type": "string"
             }
-          },
-          "max_age": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
           },
           "sharing": {
             "$ref": "#/components/schemas/SharingMode"
