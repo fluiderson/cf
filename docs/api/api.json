@@ -5623,6 +5623,16 @@
             "bearerAuth": []
           }
         ],
+        "x-odata-orderby": {
+          "allowedFields": [
+            "id asc",
+            "id desc",
+            "email asc",
+            "email desc",
+            "created_at asc",
+            "created_at desc"
+          ]
+        },
         "x-odata-filter": {
           "allowedFields": {
             "created_at": [
@@ -5648,16 +5658,6 @@
               "in"
             ]
           }
-        },
-        "x-odata-orderby": {
-          "allowedFields": [
-            "id asc",
-            "id desc",
-            "email asc",
-            "email desc",
-            "created_at asc",
-            "created_at desc"
-          ]
         }
       },
       "post": {
@@ -8284,14 +8284,15 @@
           "type",
           "title",
           "status",
-          "detail",
-          "instance",
-          "code"
+          "detail"
         ],
         "properties": {
           "code": {
             "type": "string",
             "description": "Optional machine-readable error code defined by the application."
+          },
+          "context": {
+            "description": "Optional structured context (e.g. `resource_type`, `resource_name`)."
           },
           "detail": {
             "type": "string",

@@ -33,6 +33,7 @@ This folder contains the ModKit developer documentation, split by topic for focu
 - **Secure-by-default DB access**: Use `SecureConn` + `AccessScope`. Modules cannot access raw database connections.
 - **RFC-9457 errors everywhere**: Use `Problem` (implements `IntoResponse`). Do not use `ProblemResponse`.
 - **Type-safe REST**: Use `OperationBuilder` with `.authenticated()` and `.standard_errors()`.
+- **Config loading is explicit**: `ctx.config()` / `ctx.config_expanded()` require `modules.<name>.config`; use `ctx.config_or_default()` / `ctx.config_expanded_or_default()` only when missing config should fall back to `Default`.
 - **OData macros are in `modkit-odata-macros`**: Use `modkit_odata_macros::ODataFilterable`.
 - **ClientHub registration**: `ctx.client_hub().register::<dyn MyModuleApi>(api)`; `ctx.client_hub().get::<dyn MyModuleApi>()?`.
 - **Cancellation**: Pass `CancellationToken` to background tasks for cooperative shutdown.
