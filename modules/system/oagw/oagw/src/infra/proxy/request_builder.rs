@@ -20,7 +20,6 @@ pub fn build_upstream_url(
         Scheme::Grpc => {
             return Err(DomainError::Validation {
                 detail: "gRPC scheme is not supported for HTTP proxy".into(),
-                instance: String::new(),
             });
         }
     };

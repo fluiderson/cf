@@ -51,7 +51,6 @@ pub fn validate_cors_config(config: &CorsConfig) -> Result<(), DomainError> {
     if config.allow_credentials && config.allowed_origins.iter().any(|o| o == "*") {
         return Err(DomainError::Validation {
             detail: "allow_credentials cannot be true when allowed_origins contains '*'".into(),
-            instance: String::new(),
         });
     }
 
@@ -66,7 +65,6 @@ pub fn validate_cors_config(config: &CorsConfig) -> Result<(), DomainError> {
                 detail: format!(
                     "invalid origin '{origin}': must be '*' or a valid origin (e.g. https://example.com)"
                 ),
-                instance: String::new(),
             });
         }
     }

@@ -691,7 +691,6 @@ async fn test_upload_provider_failure_sets_failed() {
     let oagw =
         MockOagwGateway::single_error(oagw_sdk::error::ServiceGatewayError::ConnectionTimeout {
             detail: "mock timeout".to_owned(),
-            instance: String::new(),
         });
 
     let outbox = Arc::new(NoopOutboxEnqueuer);
@@ -1036,7 +1035,6 @@ async fn test_upload_vector_store_indexing_fails() {
         Ok(vector_store_create_response("vs-idx-fail")),
         Err(oagw_sdk::error::ServiceGatewayError::ConnectionTimeout {
             detail: "indexing timeout".to_owned(),
-            instance: String::new(),
         }),
     ]);
 
@@ -1089,7 +1087,6 @@ async fn test_create_vector_store_failure_cleans_up_placeholder_row() {
         Ok(file_upload_response("file-vs-fail")),
         Err(oagw_sdk::error::ServiceGatewayError::ConnectionTimeout {
             detail: "VS create timeout".to_owned(),
-            instance: String::new(),
         }),
     ]);
 
@@ -1148,7 +1145,6 @@ async fn test_vector_store_failure_sets_attachment_failed() {
         Ok(file_upload_response("file-vs-fail-2")),
         Err(oagw_sdk::error::ServiceGatewayError::ConnectionTimeout {
             detail: "VS create timeout".to_owned(),
-            instance: String::new(),
         }),
         Ok(serde_json::json!({"deleted": true})), // fire-and-forget file delete
     ]);

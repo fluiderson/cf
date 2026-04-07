@@ -1,4 +1,5 @@
 use modkit_macros::domain_model;
+use oagw_sdk::error::ServiceGatewayError;
 use uuid::Uuid;
 
 use super::repo::RepositoryError;
@@ -14,7 +15,7 @@ pub enum DomainError {
     Conflict { detail: String },
 
     #[error("validation: {detail}")]
-    Validation { detail: String, instance: String },
+    Validation { detail: String },
 
     #[error("upstream '{alias}' is disabled")]
     UpstreamDisabled { alias: String },
@@ -23,41 +24,40 @@ pub enum DomainError {
     Internal { message: String },
 
     #[error("target host header required for multi-endpoint upstream")]
-    MissingTargetHost { instance: String },
+    MissingTargetHost,
 
     #[error("invalid target host header format")]
-    InvalidTargetHost { instance: String },
+    InvalidTargetHost,
 
     #[error("{detail}")]
-    UnknownTargetHost { detail: String, instance: String },
+    UnknownTargetHost { detail: String },
 
     #[error("{detail}")]
-    AuthenticationFailed { detail: String, instance: String },
+    AuthenticationFailed { detail: String },
 
     #[error("{detail}")]
-    PayloadTooLarge { detail: String, instance: String },
+    PayloadTooLarge { detail: String },
 
     #[error("{detail}")]
     RateLimitExceeded {
         detail: String,
-        instance: String,
         retry_after_secs: Option<u64>,
     },
 
     #[error("{detail}")]
-    SecretNotFound { detail: String, instance: String },
+    SecretNotFound { detail: String },
 
     #[error("{detail}")]
-    DownstreamError { detail: String, instance: String },
+    DownstreamError { detail: String },
 
     #[error("{detail}")]
-    ProtocolError { detail: String, instance: String },
+    ProtocolError { detail: String },
 
     #[error("{detail}")]
-    ConnectionTimeout { detail: String, instance: String },
+    ConnectionTimeout { detail: String },
 
     #[error("{detail}")]
-    RequestTimeout { detail: String, instance: String },
+    RequestTimeout { detail: String },
 
     /// A guard plugin rejected the request with a specific status and error code.
     #[error("guard rejected: {detail}")]
@@ -65,28 +65,27 @@ pub enum DomainError {
         status: u16,
         error_code: String,
         detail: String,
-        instance: String,
     },
 
     /// CORS: the request origin is not in the allowed origins list.
     #[error("CORS origin not allowed: {origin}")]
-    CorsOriginNotAllowed { origin: String, instance: String },
+    CorsOriginNotAllowed { origin: String },
 
     /// CORS: the request method is not in the allowed methods list.
     #[error("CORS method not allowed: {method}")]
-    CorsMethodNotAllowed { method: String, instance: String },
+    CorsMethodNotAllowed { method: String },
 
     #[error("{detail}")]
-    StreamAborted { detail: String, instance: String },
+    StreamAborted { detail: String },
 
     #[error("{detail}")]
-    LinkUnavailable { detail: String, instance: String },
+    LinkUnavailable { detail: String },
 
     #[error("{detail}")]
-    CircuitBreakerOpen { detail: String, instance: String },
+    CircuitBreakerOpen { detail: String },
 
     #[error("{detail}")]
-    IdleTimeout { detail: String, instance: String },
+    IdleTimeout { detail: String },
 
     #[error("plugin not found: {detail}")]
     PluginNotFound { detail: String },
@@ -116,7 +115,6 @@ impl DomainError {
     pub fn validation(detail: impl Into<String>) -> Self {
         Self::Validation {
             detail: detail.into(),
-            instance: String::new(),
         }
     }
 
@@ -139,6 +137,91 @@ impl DomainError {
     pub fn forbidden(detail: impl Into<String>) -> Self {
         Self::Forbidden {
             detail: detail.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn protocol(detail: impl Into<String>) -> Self {
+        Self::ProtocolError {
+            detail: detail.into(),
+        }
+    }
+}
+
+impl From<DomainError> for ServiceGatewayError {
+    fn from(e: DomainError) -> Self {
+        match e {
+            DomainError::NotFound { entity, id } => ServiceGatewayError::NotFound {
+                entity: entity.to_string(),
+                id: id.to_string(),
+            },
+            DomainError::Conflict { detail } => ServiceGatewayError::ValidationError { detail },
+            DomainError::Validation { detail } => ServiceGatewayError::ValidationError { detail },
+            DomainError::UpstreamDisabled { alias } => ServiceGatewayError::UpstreamDisabled {
+                detail: format!("upstream '{alias}' is disabled"),
+            },
+            DomainError::Internal { message } => {
+                ServiceGatewayError::DownstreamError { detail: message }
+            }
+            DomainError::MissingTargetHost => ServiceGatewayError::MissingTargetHost,
+            DomainError::InvalidTargetHost => ServiceGatewayError::InvalidTargetHost,
+            DomainError::UnknownTargetHost { detail } => {
+                ServiceGatewayError::UnknownTargetHost { detail }
+            }
+            DomainError::AuthenticationFailed { detail } => {
+                ServiceGatewayError::AuthenticationFailed { detail }
+            }
+            DomainError::PayloadTooLarge { detail } => {
+                ServiceGatewayError::PayloadTooLarge { detail }
+            }
+            DomainError::RateLimitExceeded {
+                detail,
+                retry_after_secs,
+            } => ServiceGatewayError::RateLimitExceeded {
+                detail,
+                retry_after_secs,
+            },
+            DomainError::SecretNotFound { detail } => {
+                ServiceGatewayError::SecretNotFound { detail }
+            }
+            DomainError::DownstreamError { detail } => {
+                ServiceGatewayError::DownstreamError { detail }
+            }
+            DomainError::ProtocolError { detail } => ServiceGatewayError::ProtocolError { detail },
+            DomainError::ConnectionTimeout { detail } => {
+                ServiceGatewayError::ConnectionTimeout { detail }
+            }
+            DomainError::RequestTimeout { detail } => {
+                ServiceGatewayError::RequestTimeout { detail }
+            }
+            DomainError::GuardRejected {
+                status,
+                error_code,
+                detail,
+            } => ServiceGatewayError::GuardRejected {
+                status,
+                error_code,
+                detail,
+            },
+            DomainError::CorsOriginNotAllowed { origin, .. } => ServiceGatewayError::Forbidden {
+                detail: format!("CORS origin not allowed: {origin}"),
+            },
+            DomainError::CorsMethodNotAllowed { method, .. } => ServiceGatewayError::Forbidden {
+                detail: format!("CORS method not allowed: {method}"),
+            },
+            DomainError::StreamAborted { detail } => ServiceGatewayError::StreamAborted { detail },
+            DomainError::LinkUnavailable { detail } => {
+                ServiceGatewayError::LinkUnavailable { detail }
+            }
+            DomainError::CircuitBreakerOpen { detail } => {
+                ServiceGatewayError::CircuitBreakerOpen { detail }
+            }
+            DomainError::IdleTimeout { detail } => ServiceGatewayError::IdleTimeout { detail },
+            DomainError::PluginNotFound { detail } => {
+                ServiceGatewayError::PluginNotFound { detail }
+            }
+            DomainError::PluginInUse { detail } => ServiceGatewayError::PluginInUse { detail },
+            DomainError::Forbidden { detail } => ServiceGatewayError::Forbidden { detail },
         }
     }
 }
