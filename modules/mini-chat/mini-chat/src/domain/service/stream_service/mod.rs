@@ -3195,6 +3195,350 @@ mod tests {
         assert_eq!(done.downgrade_reason.as_deref(), Some("premium_exhausted"));
     }
 
+    /// 8.7: Done fallback on finalization failure preserves quota fields from `fctx`.
+    ///
+    /// When `finalize_turn_cas` returns `Err`, the Done event must use
+    /// `fctx.quota_decision`, `fctx.downgrade_from`, and `fctx.downgrade_reason`
+    /// instead of hardcoding `"allow"` / `None` / `None` (issue #1364).
+    #[tokio::test]
+    async fn done_fallback_preserves_quota_fields_on_finalization_failure() {
+        use crate::domain::service::finalization_service::FinalizationService;
+        use crate::domain::service::quota_settler::QuotaSettler;
+
+        #[allow(de0309_must_have_domain_model)]
+        struct FailingSettler;
+        #[async_trait::async_trait]
+        impl QuotaSettler for FailingSettler {
+            async fn settle_in_tx(
+                &self,
+                _tx: &modkit_db::secure::DbTx<'_>,
+                _scope: &AccessScope,
+                _input: crate::domain::model::quota::SettlementInput,
+            ) -> Result<
+                crate::domain::model::quota::SettlementOutcome,
+                crate::domain::error::DomainError,
+            > {
+                Err(crate::domain::error::DomainError::internal(
+                    "injected settler failure",
+                ))
+            }
+        }
+
+        let db = mock_db_provider(inmem_db().await);
+        let tenant_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let message_id = Uuid::new_v4();
+        insert_test_chat(&db, tenant_id, user_id, chat_id).await;
+
+        let scope = AccessScope::allow_all();
+        let conn = db.conn().unwrap();
+        let turn_repo = TurnRepo;
+        turn_repo
+            .create_turn(
+                &conn,
+                &scope,
+                CreateTurnParams {
+                    id: turn_id,
+                    tenant_id,
+                    chat_id,
+                    request_id,
+                    requester_type: "user".to_owned(),
+                    requester_user_id: Some(user_id),
+                    reserve_tokens: Some(5000),
+                    max_output_tokens_applied: Some(4096),
+                    reserved_credits_micro: Some(250),
+                    policy_version_applied: Some(1),
+                    effective_model: Some("gpt-4o-mini".to_owned()),
+                    minimal_generation_floor_applied: Some(50),
+                    web_search_enabled: false,
+                },
+            )
+            .await
+            .expect("create turn");
+
+        let turn_repo_arc = Arc::new(TurnRepo);
+        let message_repo_arc = Arc::new(MsgRepo::new(modkit_db::odata::LimitCfg {
+            default: 20,
+            max: 100,
+        }));
+        let finalization_svc = Arc::new(FinalizationService::new(
+            Arc::clone(&db),
+            Arc::clone(&turn_repo_arc),
+            Arc::clone(&message_repo_arc),
+            Arc::new(FailingSettler) as Arc<dyn QuotaSettler>,
+            Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
+            Arc::new(crate::domain::ports::metrics::NoopMetrics),
+        ));
+
+        let fctx = FinalizationCtx {
+            finalization_svc,
+            db: Arc::clone(&db),
+            turn_repo: Arc::clone(&turn_repo_arc),
+            scope,
+            turn_id,
+            tenant_id,
+            chat_id,
+            request_id,
+            user_id,
+            requester_type: RequesterType::User,
+            message_id,
+            effective_model: "gpt-4o-mini".to_owned(),
+            selected_model: "gpt-4o".to_owned(),
+            reserve_tokens: 5000,
+            max_output_tokens_applied: 4096,
+            reserved_credits_micro: 250,
+            policy_version_applied: 1,
+            minimal_generation_floor_applied: 50,
+            quota_decision: "downgrade".to_owned(),
+            downgrade_from: Some("gpt-4o".to_owned()),
+            downgrade_reason: Some("premium_exhausted".to_owned()),
+            period_starts: Vec::new(),
+            provider_id: "openai".to_owned(),
+            metrics: Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            quota_warnings_provider: Arc::new(NoopQuotaWarningsProvider),
+        };
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider::completed(&["Hello"]));
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(32);
+        let cancel = CancellationToken::new();
+
+        let _handle = provider_task::spawn_provider_task(
+            mock_ctx(),
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "gpt-4o-mini".into(),
+                provider_model_id: "gpt-4o-mini".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
+            cancel,
+            tx,
+            Some(fctx),
+        );
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let is_term = ev.is_terminal();
+            events.push(ev);
+            if is_term {
+                break;
+            }
+        }
+
+        let done = events
+            .iter()
+            .find_map(|ev| match ev {
+                StreamEvent::Done(d) => Some(d),
+                _ => None,
+            })
+            .expect("should have a Done event even when finalization fails");
+
+        assert_eq!(
+            done.quota_decision, "downgrade",
+            "fallback Done must use fctx.quota_decision, not hardcoded 'allow'"
+        );
+        assert_eq!(
+            done.downgrade_from.as_deref(),
+            Some("gpt-4o"),
+            "fallback Done must use fctx.downgrade_from"
+        );
+        assert_eq!(
+            done.downgrade_reason.as_deref(),
+            Some("premium_exhausted"),
+            "fallback Done must use fctx.downgrade_reason"
+        );
+    }
+
+    /// 8.8: Done fallback on finalization failure preserves quota fields for the
+    /// **incomplete** terminal path.
+    ///
+    /// Same invariant as 8.7 but triggered via `MockProvider::incomplete` so the
+    /// `TerminalOutcome::Incomplete` branch is exercised.
+    #[tokio::test]
+    async fn done_fallback_preserves_quota_fields_on_finalization_failure_incomplete() {
+        use crate::domain::service::finalization_service::FinalizationService;
+        use crate::domain::service::quota_settler::QuotaSettler;
+
+        #[allow(de0309_must_have_domain_model)]
+        struct FailingSettler;
+        #[async_trait::async_trait]
+        impl QuotaSettler for FailingSettler {
+            async fn settle_in_tx(
+                &self,
+                _tx: &modkit_db::secure::DbTx<'_>,
+                _scope: &AccessScope,
+                _input: crate::domain::model::quota::SettlementInput,
+            ) -> Result<
+                crate::domain::model::quota::SettlementOutcome,
+                crate::domain::error::DomainError,
+            > {
+                Err(crate::domain::error::DomainError::internal(
+                    "injected settler failure",
+                ))
+            }
+        }
+
+        let db = mock_db_provider(inmem_db().await);
+        let tenant_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let message_id = Uuid::new_v4();
+        insert_test_chat(&db, tenant_id, user_id, chat_id).await;
+
+        let scope = AccessScope::allow_all();
+        let conn = db.conn().unwrap();
+        TurnRepo
+            .create_turn(
+                &conn,
+                &scope,
+                CreateTurnParams {
+                    id: turn_id,
+                    tenant_id,
+                    chat_id,
+                    request_id,
+                    requester_type: "user".to_owned(),
+                    requester_user_id: Some(user_id),
+                    reserve_tokens: Some(5000),
+                    max_output_tokens_applied: Some(4096),
+                    reserved_credits_micro: Some(250),
+                    policy_version_applied: Some(1),
+                    effective_model: Some("gpt-4o-mini".to_owned()),
+                    minimal_generation_floor_applied: Some(50),
+                    web_search_enabled: false,
+                },
+            )
+            .await
+            .expect("create turn");
+
+        let turn_repo_arc = Arc::new(TurnRepo);
+        let message_repo_arc = Arc::new(MsgRepo::new(modkit_db::odata::LimitCfg {
+            default: 20,
+            max: 100,
+        }));
+        let finalization_svc = Arc::new(FinalizationService::new(
+            Arc::clone(&db),
+            Arc::clone(&turn_repo_arc),
+            Arc::clone(&message_repo_arc),
+            Arc::new(FailingSettler) as Arc<dyn QuotaSettler>,
+            Arc::new(NoopOutboxEnqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>,
+            Arc::new(crate::domain::ports::metrics::NoopMetrics),
+        ));
+
+        let fctx = FinalizationCtx {
+            finalization_svc,
+            db: Arc::clone(&db),
+            turn_repo: Arc::clone(&turn_repo_arc),
+            scope,
+            turn_id,
+            tenant_id,
+            chat_id,
+            request_id,
+            user_id,
+            requester_type: RequesterType::User,
+            message_id,
+            effective_model: "gpt-4o-mini".to_owned(),
+            selected_model: "gpt-4o".to_owned(),
+            reserve_tokens: 5000,
+            max_output_tokens_applied: 4096,
+            reserved_credits_micro: 250,
+            policy_version_applied: 1,
+            minimal_generation_floor_applied: 50,
+            quota_decision: "downgrade".to_owned(),
+            downgrade_from: Some("gpt-4o".to_owned()),
+            downgrade_reason: Some("premium_exhausted".to_owned()),
+            period_starts: Vec::new(),
+            provider_id: "openai".to_owned(),
+            metrics: Arc::new(crate::domain::ports::metrics::NoopMetrics),
+            quota_warnings_provider: Arc::new(NoopQuotaWarningsProvider),
+        };
+
+        let provider: Arc<dyn LlmProvider> =
+            Arc::new(MockProvider::incomplete(&["Hello", ", wor"]));
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(32);
+        let cancel = CancellationToken::new();
+
+        let _handle = provider_task::spawn_provider_task(
+            mock_ctx(),
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "gpt-4o-mini".into(),
+                provider_model_id: "gpt-4o-mini".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
+            cancel,
+            tx,
+            Some(fctx),
+        );
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            let is_term = ev.is_terminal();
+            events.push(ev);
+            if is_term {
+                break;
+            }
+        }
+
+        let done = events
+            .iter()
+            .find_map(|ev| match ev {
+                StreamEvent::Done(d) => Some(d),
+                _ => None,
+            })
+            .expect("should have a Done event even when finalization fails on incomplete path");
+
+        assert_eq!(
+            done.quota_decision, "downgrade",
+            "incomplete fallback Done must use fctx.quota_decision, not hardcoded 'allow'"
+        );
+        assert_eq!(
+            done.downgrade_from.as_deref(),
+            Some("gpt-4o"),
+            "incomplete fallback Done must use fctx.downgrade_from"
+        );
+        assert_eq!(
+            done.downgrade_reason.as_deref(),
+            Some("premium_exhausted"),
+            "incomplete fallback Done must use fctx.downgrade_reason"
+        );
+    }
+
     // ── Preflight wiring tests (11.x) ──
 
     fn make_catalog_entry(
@@ -4829,6 +5173,8 @@ mod tests {
             effective_model: Set(None),
             minimal_generation_floor_applied: Set(None),
             web_search_enabled: Set(false),
+            web_search_completed_count: Set(0),
+            code_interpreter_completed_count: Set(0),
             deleted_at: Set(None),
             replaced_by_request_id: Set(None),
             started_at: Set(now),

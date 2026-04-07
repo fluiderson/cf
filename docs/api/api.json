@@ -6410,33 +6410,23 @@
             },
             "description": "Internal Server Error"
           }
-        },
-        "summary": "List all nodes",
-        "tags": [
-          "Nodes Registry"
-        ]
-      }
-    },
-    "/nodes-registry/v1/nodes/{id}": {
-      "get": {
-        "description": "Get detailed information about a specific node. Use ?details=true to include sysinfo and syscap. Use ?force_refresh=true to invalidate syscap cache.",
-        "operationId": "nodes_registry.get_node",
-        "parameters": [
-          {
-            "description": "Node UUID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
+        }
+      },
+      "CorsConfig": {
+        "type": "object",
+        "properties": {
+          "allow_credentials": {
+            "type": "boolean"
+          },
+          "allowed_methods": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CorsHttpMethod"
             }
           },
-          {
-            "description": "Include detailed system information and capabilities",
-            "in": "query",
-            "name": "details",
-            "required": false,
-            "schema": {
+          "allowed_origins": {
+            "type": "array",
+            "items": {
               "type": "string"
             }
           },
@@ -6448,6 +6438,67 @@
             "schema": {
               "type": "string"
             }
+          },
+          "sharing": {
+            "$ref": "#/components/schemas/SharingMode"
+          }
+        }
+      },
+      "CorsHttpMethod": {
+        "type": "string",
+        "enum": [
+          "GET",
+          "POST",
+          "PUT",
+          "DELETE",
+          "PATCH",
+          "HEAD",
+          "OPTIONS"
+        ]
+      },
+      "CpuInfoDto": {
+        "type": "object",
+        "required": [
+          "model",
+          "num_cpus",
+          "cores",
+          "frequency_mhz"
+        ],
+        "properties": {
+          "cores": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "frequency_mhz": {
+            "type": "number",
+            "format": "double"
+          },
+          "model": {
+            "type": "string"
+          },
+          "num_cpus": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "CreateChatReq": {
+        "type": "object",
+        "description": "Request DTO for creating a new chat.",
+        "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         ],
         "responses": {
@@ -8108,6 +8159,17 @@
               "type": "string"
             }
           }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "title": "Problem",
+        "description": "RFC 9457 Problem Details for HTTP APIs",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail"
         ],
         "responses": {
           "200": {
@@ -8120,15 +8182,12 @@
             },
             "description": "List of entities"
           },
-          "400": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Bad Request"
+          "context": {
+            "description": "Optional structured context (e.g. `resource_type`, `resource_name`)."
+          },
+          "detail": {
+            "type": "string",
+            "description": "A human-readable explanation specific to this occurrence of the problem."
           },
           "401": {
             "content": {

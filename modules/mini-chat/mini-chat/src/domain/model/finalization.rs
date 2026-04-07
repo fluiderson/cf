@@ -119,4 +119,8 @@ pub struct OrphanFinalizationInput {
     pub minimal_generation_floor_applied: Option<i32>,
     /// `started_at` — used to derive `period_starts` for quota settlement.
     pub started_at: OffsetDateTime,
+    /// Completed web search tool calls persisted from the DB (0 if pod crashed before increment).
+    pub web_search_completed_count: u32,
+    /// Completed code interpreter tool calls persisted from the DB (0 if pod crashed before increment).
+    pub code_interpreter_completed_count: u32,
 }

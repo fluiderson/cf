@@ -518,8 +518,8 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                                 .unwrap_or(0),
                             settlement_path: SettlementPath::Estimated,
                             period_starts,
-                            web_search_calls: 0,
-                            code_interpreter_calls: 0,
+                            web_search_calls: input.web_search_completed_count,
+                            code_interpreter_calls: input.code_interpreter_completed_count,
                         };
 
                         let scope = modkit_security::AccessScope::allow_all();
@@ -571,8 +571,8 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                         actual_credits_micro,
                         settlement_method: settlement_method_str.to_owned(),
                         policy_version_applied: input.policy_version_applied.unwrap_or(0),
-                        web_search_calls: 0,
-                        code_interpreter_calls: 0,
+                        web_search_calls: input.web_search_completed_count,
+                        code_interpreter_calls: input.code_interpreter_completed_count,
                         timestamp: now,
                     };
                     outbox_enqueuer
@@ -1758,6 +1758,8 @@ mod tests {
             policy_version_applied: Some(1),
             minimal_generation_floor_applied: Some(10),
             started_at: time::OffsetDateTime::now_utc(),
+            web_search_completed_count: 0,
+            code_interpreter_completed_count: 0,
         };
 
         let result = svc.finalize_orphan_turn(input, 60).await.unwrap();
@@ -1800,6 +1802,56 @@ mod tests {
             outbox.flush_count(),
             1,
             "flush should be called after CAS win"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_orphan_tool_counts_propagate_to_usage_event() {
+        let db = mock_db_provider(inmem_db().await);
+        let (svc, outbox) = build_finalization_service(Arc::clone(&db));
+
+        let tenant_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+
+        insert_test_chat(&db, tenant_id, chat_id, user_id).await;
+        insert_running_turn(&db, tenant_id, chat_id, turn_id, request_id).await;
+
+        let conn = db.conn().unwrap();
+        backdate_turn_progress(&conn, turn_id).await;
+
+        let input = crate::domain::model::finalization::OrphanFinalizationInput {
+            turn_id,
+            tenant_id,
+            chat_id,
+            request_id,
+            user_id: Some(user_id),
+            requester_type: mini_chat_sdk::RequesterType::User,
+            effective_model: Some("gpt-5.2".to_owned()),
+            reserve_tokens: Some(100),
+            max_output_tokens_applied: Some(4096),
+            reserved_credits_micro: Some(1000),
+            policy_version_applied: Some(1),
+            minimal_generation_floor_applied: Some(10),
+            started_at: time::OffsetDateTime::now_utc(),
+            web_search_completed_count: 3,
+            code_interpreter_completed_count: 2,
+        };
+
+        let result = svc.finalize_orphan_turn(input, 60).await.unwrap();
+        assert!(result, "should be CAS winner");
+
+        let usage_events = outbox.usage_events.lock().unwrap();
+        assert_eq!(usage_events.len(), 1);
+        assert_eq!(
+            usage_events[0].web_search_calls, 3,
+            "web_search_calls must reflect persisted count"
+        );
+        assert_eq!(
+            usage_events[0].code_interpreter_calls, 2,
+            "code_interpreter_calls must reflect persisted count"
         );
     }
 
@@ -1852,6 +1904,8 @@ mod tests {
             policy_version_applied: Some(1),
             minimal_generation_floor_applied: Some(10),
             started_at: time::OffsetDateTime::now_utc(),
+            web_search_completed_count: 0,
+            code_interpreter_completed_count: 0,
         };
 
         let result = svc.finalize_orphan_turn(input, 60).await.unwrap();
@@ -1901,6 +1955,8 @@ mod tests {
             policy_version_applied: Some(1),
             minimal_generation_floor_applied: Some(10),
             started_at: time::OffsetDateTime::now_utc(),
+            web_search_completed_count: 0,
+            code_interpreter_completed_count: 0,
         };
 
         let result = svc.finalize_orphan_turn(input, 60).await.unwrap();
