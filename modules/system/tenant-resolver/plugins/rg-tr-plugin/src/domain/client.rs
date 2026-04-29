@@ -1,3 +1,6 @@
+// Created: 2026-04-23 by Constructor Tech
+// Updated: 2026-04-29 by Constructor Tech
+
 //! Client implementation for the RG tenant resolver plugin.
 //!
 //! Implements `TenantResolverPluginClient` using the domain service.
@@ -118,3 +121,8 @@ impl TenantResolverPluginClient for Service {
             .await
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "client_tests.rs"]
+mod client_tests;

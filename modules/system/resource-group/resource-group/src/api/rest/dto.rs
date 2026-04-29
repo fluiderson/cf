@@ -1,5 +1,5 @@
 // Created: 2026-04-16 by Constructor Tech
-// Updated: 2026-04-28 by Constructor Tech
+// Updated: 2026-04-29 by Constructor Tech
 //! REST DTOs for resource-group type and group management.
 
 use resource_group_sdk::models::{
@@ -292,3 +292,7 @@ impl From<ResourceGroupMembership> for MembershipDto {
 }
 
 // @cpt-dod:cpt-cf-resource-group-dod-testing-odata-dto:p1
+
+#[cfg(test)]
+#[path = "dto_tests.rs"]
+mod tests;
