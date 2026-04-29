@@ -1,3 +1,6 @@
+// Created: 2026-04-23 by Constructor Tech
+// Updated: 2026-04-29 by Constructor Tech
+
 //! Domain service for the RG tenant resolver plugin.
 //!
 //! Maps Resource Group hierarchy data to tenant resolver models.
@@ -522,3 +525,8 @@ fn filter_descendants_by_barrier(
 
     result
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "service_tests.rs"]
+mod service_tests;

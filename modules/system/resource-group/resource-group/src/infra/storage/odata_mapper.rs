@@ -1,4 +1,5 @@
 // Created: 2026-04-16 by Constructor Tech
+// Updated: 2026-04-29 by Constructor Tech
 // @cpt-dod:cpt-cf-resource-group-dod-sdk-foundation-rest-odata:p1
 //! Infrastructure layer mapping from type-safe `FilterNode` to `SeaORM` Conditions.
 //!
@@ -137,3 +138,7 @@ impl ODataFieldMapping<MembershipFilterField> for MembershipODataMapper {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "odata_mapper_tests.rs"]
+mod tests;

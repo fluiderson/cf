@@ -1,3 +1,6 @@
+// Created: 2026-04-23 by Constructor Tech
+// Updated: 2026-04-29 by Constructor Tech
+
 //! Service implementation for the TR `AuthZ` resolver plugin.
 //!
 //! Implements the 8 access-check rules (R1–R8) from the tenant-based access
@@ -459,3 +462,7 @@ impl Service {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "service_tests.rs"]
+mod service_tests;

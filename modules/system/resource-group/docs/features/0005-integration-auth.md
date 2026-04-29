@@ -3,7 +3,7 @@
 
 # Feature: Integration Read Port & Dual Authentication Modes
 
-- [x] `p1` - **ID**: `cpt-cf-resource-group-featstatus-integration-auth`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-integration-auth`
 
 - [x] `p1` - `cpt-cf-resource-group-feature-integration-auth`
 
@@ -21,11 +21,12 @@
   - [Plugin Gateway Routing](#plugin-gateway-routing)
 - [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
   - [Tenant Scope Enforcement for Ownership-Graph Writes](#tenant-scope-enforcement-for-ownership-graph-writes)
-  - [Authentication Mode Decision](#authentication-mode-decision)
+  - [Authentication Mode Decision (`p2` — deferred, not implemented yet)](#authentication-mode-decision-p2--deferred-not-implemented-yet)
 - [4. States (CDSL)](#4-states-cdsl)
 - [5. Definitions of Done](#5-definitions-of-done)
   - [Integration Read Service](#integration-read-service)
-  - [Dual Authentication Mode Routing](#dual-authentication-mode-routing)
+  - [JWT Authentication Routing](#jwt-authentication-routing)
+  - [Dual Authentication Mode Routing (`p2` — deferred, not implemented yet)](#dual-authentication-mode-routing-p2--deferred-not-implemented-yet)
   - [Tenant Scope Enforcement for Ownership-Graph Profile](#tenant-scope-enforcement-for-ownership-graph-profile)
   - [Unit Test Coverage for Integration Auth](#unit-test-coverage-for-integration-auth)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
