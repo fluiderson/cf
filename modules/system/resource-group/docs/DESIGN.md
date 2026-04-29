@@ -503,7 +503,7 @@ Query support on all list endpoints:
 - `cursor` — opaque token from previous response for next/previous page
 - Ordering is undefined but consistent — no `$orderby`
 
-Group list (`listGroups`) `$filter` fields: `type` (eq, ne, in), `hierarchy/parent_id` (eq, ne, in — direct parent only, depth=1; for ancestor traversal use `listGroupHierarchy`), `id` (eq, ne, in), `name` (eq, ne, in).
+Group list (`listGroups`) `$filter` fields: `type` (eq, ne, in), `hierarchy/parent_id` (eq, ne, in — direct parent only, depth=1; for ancestor traversal use `listGroupHierarchy`), `tenant_id` (eq, ne, in — narrows the AuthZ-scoped result to a specific tenant; cannot widen access), `id` (eq, ne, in), `name` (eq, ne, in).
 
 Group depth (`listGroupHierarchy`) `$filter` fields: `hierarchy/depth` (eq, ne, gt, ge, lt, le), `type` (eq, ne, in).
 

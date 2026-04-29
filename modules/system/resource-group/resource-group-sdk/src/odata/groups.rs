@@ -3,7 +3,7 @@
 //! `OData` filter field definitions for resource group entities.
 //!
 //! Group list `$filter` fields: `type` (eq, ne, in), `hierarchy/parent_id` (eq, ne, in),
-//! `id` (eq, ne, in), `name` (eq, ne, in).
+//! `tenant_id` (eq, ne, in), `id` (eq, ne, in), `name` (eq, ne, in).
 //!
 //! The `hierarchy/parent_id` field uses `OData` nested path syntax; since the
 //! `ODataFilterable` derive macro does not support slash-separated names,
@@ -18,6 +18,8 @@ pub enum GroupFilterField {
     Type,
     /// Filter by parent group ID (direct parent only).
     HierarchyParentId,
+    /// Filter by owning tenant ID.
+    TenantId,
     /// Filter by group ID.
     Id,
     /// Filter by group name.
@@ -25,12 +27,19 @@ pub enum GroupFilterField {
 }
 
 impl FilterField for GroupFilterField {
-    const FIELDS: &'static [Self] = &[Self::Type, Self::HierarchyParentId, Self::Id, Self::Name];
+    const FIELDS: &'static [Self] = &[
+        Self::Type,
+        Self::HierarchyParentId,
+        Self::TenantId,
+        Self::Id,
+        Self::Name,
+    ];
 
     fn name(&self) -> &'static str {
         match self {
             Self::Type => "type",
             Self::HierarchyParentId => "hierarchy/parent_id",
+            Self::TenantId => "tenant_id",
             Self::Id => "id",
             Self::Name => "name",
         }
@@ -41,7 +50,7 @@ impl FilterField for GroupFilterField {
             // Type is a GTS type path string in the public API; the persistence
             // layer resolves string paths to SMALLINT IDs after OData validation.
             Self::Type | Self::Name => FieldKind::String,
-            Self::HierarchyParentId | Self::Id => FieldKind::Uuid,
+            Self::HierarchyParentId | Self::TenantId | Self::Id => FieldKind::Uuid,
         }
     }
 }

@@ -510,13 +510,14 @@ paths:
         For hierarchy traversal (ancestors, descendants, depth),
         use the dedicated `/{group_id}/hierarchy` endpoint.
 
-        - `$filter`: `type` (eq, ne, in), `parent_id` (eq, ne, in), `id` (eq, ne, in), `name` (eq, ne, in)
+        - `$filter`: `type` (eq, ne, in), `hierarchy/parent_id` (eq, ne, in), `tenant_id` (eq, ne, in), `id` (eq, ne, in), `name` (eq, ne, in)
         - `limit`: page size (1..200), default 25
         - `cursor`: opaque token for pagination
       x-odata-filter:
         supported_fields:
           type: [eq, ne, in]
-          parent_id: [eq, ne, in]
+          hierarchy/parent_id: [eq, ne, in]
+          tenant_id: [eq, ne, in]
           id: [eq, ne, in]
           name: [eq, ne, in]
       parameters:
@@ -587,7 +588,7 @@ paths:
                       limit: 25
 
                 parent-id-eq:
-                  summary: "$filter=parent_id eq '11111111-...'"
+                  summary: "$filter=hierarchy/parent_id eq '11111111-...'"
                   description: Direct children of T1.
                   value:
                     items:

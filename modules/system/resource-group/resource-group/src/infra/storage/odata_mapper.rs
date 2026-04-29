@@ -54,6 +54,7 @@ impl FieldToColumn<GroupFilterField> for GroupODataMapper {
         match field {
             GroupFilterField::Type => GroupColumn::GtsTypeId,
             GroupFilterField::HierarchyParentId => GroupColumn::ParentId,
+            GroupFilterField::TenantId => GroupColumn::TenantId,
             GroupFilterField::Id => GroupColumn::Id,
             GroupFilterField::Name => GroupColumn::Name,
         }
@@ -71,6 +72,7 @@ impl ODataFieldMapping<GroupFilterField> for GroupODataMapper {
                 Some(pid) => sea_orm::Value::Uuid(Some(Box::new(pid))),
                 None => sea_orm::Value::Uuid(None),
             },
+            GroupFilterField::TenantId => sea_orm::Value::Uuid(Some(Box::new(model.tenant_id))),
             GroupFilterField::Type => sea_orm::Value::SmallInt(Some(model.gts_type_id)),
         }
     }

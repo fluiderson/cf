@@ -178,7 +178,7 @@ The Resource Group DESIGN is decomposed into seven features organized around the
   - Hierarchy queries: ancestors/descendants ordered by depth via indexed closure table lookups
   - Hierarchy depth endpoint: `GET /groups/{group_id}/hierarchy` returning `ResourceGroupWithDepth` with relative depth (positive = descendants, negative = ancestors, 0 = self) and OData filtering on `hierarchy/depth`
   - Query profile enforcement: configurable `max_depth`/`max_width` on writes, no truncation on reads for already-existing data, deterministic `DepthLimitExceeded`/`WidthLimitExceeded` errors
-  - Group REST endpoints: CRUD under `/api/resource-group/v1/groups` with OData `$filter` on `type`, `hierarchy/parent_id`, `id`, `name`
+  - Group REST endpoints: CRUD under `/api/resource-group/v1/groups` with OData `$filter` on `type`, `hierarchy/parent_id`, `tenant_id`, `id`, `name`
   - Force delete: optional `?force=true` for cascade deletion of subtree and associated memberships
   - Group data seeding: idempotent seed with parent-child link and type compatibility validation
   - Write concurrency: SERIALIZABLE isolation with bounded retry for serialization conflicts

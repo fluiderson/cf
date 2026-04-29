@@ -9,6 +9,7 @@ fn group_filter_field_names_correct() {
         GroupFilterField::HierarchyParentId.name(),
         "hierarchy/parent_id"
     );
+    assert_eq!(GroupFilterField::TenantId.name(), "tenant_id");
     assert_eq!(GroupFilterField::Id.name(), "id");
     assert_eq!(GroupFilterField::Name.name(), "name");
 }
@@ -18,6 +19,7 @@ fn group_filter_field_names_correct() {
 fn group_filter_field_kinds_correct() {
     assert_eq!(GroupFilterField::Type.kind(), FieldKind::String);
     assert_eq!(GroupFilterField::HierarchyParentId.kind(), FieldKind::Uuid);
+    assert_eq!(GroupFilterField::TenantId.kind(), FieldKind::Uuid);
     assert_eq!(GroupFilterField::Id.kind(), FieldKind::Uuid);
     assert_eq!(GroupFilterField::Name.kind(), FieldKind::String);
 }
@@ -25,5 +27,5 @@ fn group_filter_field_kinds_correct() {
 // TC-ODATA-03: FIELDS completeness
 #[test]
 fn group_filter_field_completeness() {
-    assert_eq!(GroupFilterField::FIELDS.len(), 4);
+    assert_eq!(GroupFilterField::FIELDS.len(), 5);
 }

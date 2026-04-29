@@ -451,15 +451,15 @@ OData filter fields use manual `FilterField` trait implementations with string f
 
 #### TC-ODATA-01: GroupFilterField names [P1]
 - **Covers**: G42
-- **Assert**: `Type.name() == "type"`, `HierarchyParentId.name() == "hierarchy/parent_id"`, `Id.name() == "id"`, `Name.name() == "name"`
+- **Assert**: `Type.name() == "type"`, `HierarchyParentId.name() == "hierarchy/parent_id"`, `TenantId.name() == "tenant_id"`, `Id.name() == "id"`, `Name.name() == "name"`
 
 #### TC-ODATA-02: GroupFilterField kinds [P1]
 - **Covers**: G42
-- **Assert**: `Type -> I64`, `HierarchyParentId -> Uuid`, `Id -> Uuid`, `Name -> String`
+- **Assert**: `Type -> String`, `HierarchyParentId -> Uuid`, `TenantId -> Uuid`, `Id -> Uuid`, `Name -> String`
 
 #### TC-ODATA-03: GroupFilterField FIELDS constant completeness [P2]
 - **Covers**: G42
-- **Assert**: `FIELDS.len() == 4`, contains all variants
+- **Assert**: `FIELDS.len() == 5`, contains all variants
 
 #### TC-ODATA-04: HierarchyFilterField names and kinds [P1]
 - **Covers**: G43
@@ -475,7 +475,7 @@ OData filter fields use manual `FilterField` trait implementations with string f
 
 #### TC-ODATA-07: GroupODataMapper field-to-column mapping [P2]
 - **Covers**: G45
-- **Assert**: `Type -> GtsTypeId`, `HierarchyParentId -> ParentId`, `Id -> Id`, `Name -> Name`
+- **Assert**: `Type -> GtsTypeId`, `HierarchyParentId -> ParentId`, `TenantId -> TenantId`, `Id -> Id`, `Name -> Name`
 
 #### TC-ODATA-08: MembershipODataMapper field-to-column mapping [P2]
 - **Covers**: G45

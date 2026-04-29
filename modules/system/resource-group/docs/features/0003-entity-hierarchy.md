@@ -356,7 +356,7 @@ The system **MUST** implement a Hierarchy Service that maintains the closure tab
 The system **MUST** implement REST endpoint handlers for group management under `/api/resource-group/v1/groups` and the hierarchy depth endpoint.
 
 **Required endpoints**:
-- `GET /groups` — list groups with OData `$filter` (fields: `type`, `hierarchy/parent_id`, `id`, `name`; operators: `eq`, `ne`, `in`) and cursor-based pagination
+- `GET /groups` — list groups with OData `$filter` (fields: `type`, `hierarchy/parent_id`, `tenant_id`, `id`, `name`; operators: `eq`, `ne`, `in`) and cursor-based pagination
 - `POST /groups` — create group, return 201 Created
 - `GET /groups/{group_id}` — get group by UUID, return 404 if not found
 - `PUT /groups/{group_id}` — update group (name, type, metadata) or move group (hierarchy.parent_id), return 200 OK
