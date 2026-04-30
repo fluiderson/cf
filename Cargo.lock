@@ -1200,6 +1200,7 @@ dependencies = [
  "axum",
  "calculator-sdk",
  "cf-modkit",
+ "cf-modkit-canonical-errors",
  "cf-modkit-macros",
  "cf-modkit-security",
  "http",
@@ -1498,6 +1499,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "cf-modkit",
+ "cf-modkit-canonical-errors",
  "cf-modkit-macros",
  "cf-modkit-security",
  "docx-rust",
@@ -1617,6 +1619,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "axum",
+ "cf-modkit-canonical-errors",
  "cf-modkit-db",
  "cf-modkit-errors",
  "cf-modkit-macros",
@@ -1705,12 +1708,16 @@ dependencies = [
 name = "cf-modkit-canonical-errors"
 version = "0.7.1"
 dependencies = [
+ "axum",
  "cf-modkit-canonical-errors-macro",
  "gts-id",
+ "http",
  "sea-orm",
  "serde",
  "serde_json",
+ "tracing",
  "trybuild",
+ "utoipa",
 ]
 
 [[package]]
