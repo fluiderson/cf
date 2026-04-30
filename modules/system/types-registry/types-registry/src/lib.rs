@@ -14,9 +14,8 @@
 
 // === PUBLIC API (from SDK) ===
 pub use types_registry_sdk::{
-    DynGtsEntity, DynRegisterResult, GtsEntity, GtsInstanceEntity, GtsTypeEntity, InstanceObject,
-    ListQuery, RegisterResult, RegisterSummary, SegmentMatchScope, TypeSchema, TypesRegistryClient,
-    TypesRegistryError,
+    GtsInstance, GtsInstanceId, GtsTypeId, GtsTypeSchema, InstanceQuery, RegisterResult,
+    RegisterSummary, TypeSchemaQuery, TypesRegistryClient, TypesRegistryError,
 };
 
 // === MODULE DEFINITION ===

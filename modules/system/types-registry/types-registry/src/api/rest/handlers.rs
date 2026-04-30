@@ -6,7 +6,6 @@ use axum::Json;
 use axum::extract::{Extension, Path, Query};
 use modkit::api::prelude::*;
 use modkit::api::problem::Problem;
-use types_registry_sdk::RegisterSummary;
 
 use super::dto::{
     GtsEntityDto, ListEntitiesQuery, ListEntitiesResponse, RegisterEntitiesRequest,
@@ -28,13 +27,33 @@ pub async fn register_entities(
         return Err(DomainError::NotInReadyMode.into());
     }
 
-    let results = service.register_validated(req.entities);
+    let outcomes = service.register_validated(req.entities);
 
-    let summary = RegisterSummary::from_results(&results);
-    let result_dtos: Vec<RegisterResultDto> = results.into_iter().map(Into::into).collect();
+    let total = outcomes.len();
+    let mut succeeded = 0_usize;
+    let mut result_dtos: Vec<RegisterResultDto> = Vec::with_capacity(total);
+    for (gts_id, outcome) in outcomes {
+        match outcome {
+            Ok(entity) => {
+                succeeded += 1;
+                result_dtos.push(RegisterResultDto::Ok {
+                    entity: entity.into(),
+                });
+            }
+            Err(e) => result_dtos.push(RegisterResultDto::Error {
+                gts_id,
+                error: e.to_string(),
+            }),
+        }
+    }
+    let failed = total - succeeded;
 
     let response = RegisterEntitiesResponse {
-        summary: RegisterSummaryDto::from(summary),
+        summary: RegisterSummaryDto {
+            total,
+            succeeded,
+            failed,
+        },
         results: result_dtos,
     };
 

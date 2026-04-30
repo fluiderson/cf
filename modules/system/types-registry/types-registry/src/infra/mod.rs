@@ -2,6 +2,7 @@
 //!
 //! Contains storage implementations and adapters.
 
+pub mod cache;
 pub mod storage;
 
 pub use storage::InMemoryGtsRepository;

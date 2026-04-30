@@ -1,14 +1,13 @@
 // Created: 2026-04-07 by Constructor Tech
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use credstore_sdk::{OwnerId, SecretMetadata, SecretValue, SharingMode, TenantId};
 use modkit::client_hub::{ClientHub, ClientScope};
-use types_registry_sdk::{GtsEntity, TypesRegistryError};
-use uuid::Uuid;
+use types_registry_sdk::TypesRegistryError;
+use types_registry_sdk::testing::{MockTypesRegistryClient, make_test_instance};
 
 use super::*;
-use crate::domain::test_support::{MockPlugin, MockRegistry, test_ctx};
+use crate::domain::test_support::{MockPlugin, test_ctx};
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -18,8 +17,11 @@ fn empty_hub() -> Arc<ClientHub> {
 
 /// Build the GTS instance ID string for a credstore plugin test instance.
 fn test_instance_id() -> String {
-    // schema prefix + instance suffix
-    format!("{}test._.mock.v1", CredStorePluginSpecV1::gts_schema_id())
+    // schema prefix + instance suffix (5-token: vendor.package.namespace.type.vMAJOR)
+    format!(
+        "{}test.credstore.mock.instance.v1",
+        CredStorePluginSpecV1::gts_schema_id()
+    )
 }
 
 /// Build the JSON content for a `BaseModkitPluginV1`<CredStorePluginSpecV1>
@@ -35,24 +37,17 @@ fn plugin_content(gts_id: &str, vendor: &str) -> serde_json::Value {
 
 // ── helper to build a fully-wired hub ────────────────────────────────────
 
-/// Wires a counting `MockRegistry` and a scoped plugin into a `ClientHub`.
-/// Returns `(hub, registry_arc)` so tests can inspect `list_calls`.
+/// Wires a counting `MockTypesRegistryClient` and a scoped plugin into a `ClientHub`.
+/// Returns `(hub, registry_arc)` so tests can inspect `list_instance_calls()`.
 fn hub_with_counting_registry_and_plugin(
     instance_id: &str,
     vendor: &str,
     plugin: Arc<dyn CredStorePluginClientV1>,
-) -> (Arc<ClientHub>, Arc<MockRegistry>) {
+) -> (Arc<ClientHub>, Arc<MockTypesRegistryClient>) {
     let hub = Arc::new(ClientHub::default());
 
-    let entity = GtsEntity {
-        id: Uuid::nil(),
-        gts_id: instance_id.to_owned(),
-        segments: vec![],
-        is_schema: false,
-        content: plugin_content(instance_id, vendor),
-        description: None,
-    };
-    let registry = Arc::new(MockRegistry::new(vec![entity]));
+    let instance = make_test_instance(instance_id, plugin_content(instance_id, vendor));
+    let registry = Arc::new(MockTypesRegistryClient::new().with_instances([instance]));
     hub.register::<dyn TypesRegistryClient>(registry.clone() as Arc<dyn TypesRegistryClient>);
 
     hub.register_scoped::<dyn CredStorePluginClientV1>(ClientScope::gts_id(instance_id), plugin);
@@ -85,15 +80,15 @@ async fn get_retries_resolution_on_each_call_when_registry_absent() {
     // Use a failing registry (not an empty hub) so list() is actually invoked and
     // we can assert the call count proves no caching.
     let hub = Arc::new(ClientHub::default());
-    let registry = Arc::new(MockRegistry::failing(TypesRegistryError::internal(
-        "unavailable",
-    )));
+    let registry = Arc::new(
+        MockTypesRegistryClient::new().with_list_error(TypesRegistryError::internal("unavailable")),
+    );
     hub.register::<dyn TypesRegistryClient>(registry.clone() as Arc<dyn TypesRegistryClient>);
     let svc = Service::new(hub, "hyperspot".into());
     let key = SecretRef::new("my-key").unwrap();
     assert!(svc.get(&test_ctx(), &key).await.is_err());
     assert!(svc.get(&test_ctx(), &key).await.is_err());
-    assert_eq!(registry.list_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(registry.list_instance_calls(), 2);
 }
 
 // ── resolve_plugin ───────────────────────────────────────────────────────
@@ -101,7 +96,7 @@ async fn get_retries_resolution_on_each_call_when_registry_absent() {
 #[tokio::test]
 async fn resolve_plugin_returns_plugin_not_found_when_no_instances() {
     let hub = Arc::new(ClientHub::default());
-    let registry: Arc<dyn TypesRegistryClient> = Arc::new(MockRegistry::new(vec![]));
+    let registry: Arc<dyn TypesRegistryClient> = Arc::new(MockTypesRegistryClient::new());
     hub.register::<dyn TypesRegistryClient>(registry);
 
     let svc = Service::new(hub, "hyperspot".into());
@@ -116,15 +111,9 @@ async fn resolve_plugin_returns_plugin_not_found_when_no_instances() {
 async fn resolve_plugin_returns_plugin_not_found_when_vendor_mismatch() {
     let instance_id = test_instance_id();
     let hub = Arc::new(ClientHub::default());
-    let entity = GtsEntity {
-        id: Uuid::nil(),
-        gts_id: instance_id.clone(),
-        segments: vec![],
-        is_schema: false,
-        content: plugin_content(&instance_id, "other-vendor"),
-        description: None,
-    };
-    let registry: Arc<dyn TypesRegistryClient> = Arc::new(MockRegistry::new(vec![entity]));
+    let instance = make_test_instance(&instance_id, plugin_content(&instance_id, "other-vendor"));
+    let registry: Arc<dyn TypesRegistryClient> =
+        Arc::new(MockTypesRegistryClient::new().with_instances([instance]));
     hub.register::<dyn TypesRegistryClient>(registry);
 
     let svc = Service::new(hub, "hyperspot".into());
@@ -139,15 +128,12 @@ async fn resolve_plugin_returns_plugin_not_found_when_vendor_mismatch() {
 async fn resolve_plugin_returns_invalid_when_content_malformed() {
     let instance_id = test_instance_id();
     let hub = Arc::new(ClientHub::default());
-    let entity = GtsEntity {
-        id: Uuid::nil(),
-        gts_id: instance_id.clone(),
-        segments: vec![],
-        is_schema: false,
-        content: serde_json::json!({ "not": "valid-plugin-content" }),
-        description: None,
-    };
-    let registry: Arc<dyn TypesRegistryClient> = Arc::new(MockRegistry::new(vec![entity]));
+    let instance = make_test_instance(
+        &instance_id,
+        serde_json::json!({ "not": "valid-plugin-content" }),
+    );
+    let registry: Arc<dyn TypesRegistryClient> =
+        Arc::new(MockTypesRegistryClient::new().with_instances([instance]));
     hub.register::<dyn TypesRegistryClient>(registry);
 
     let svc = Service::new(hub, "hyperspot".into());
@@ -161,9 +147,9 @@ async fn resolve_plugin_returns_invalid_when_content_malformed() {
 #[tokio::test]
 async fn resolve_plugin_returns_internal_when_registry_list_fails() {
     let hub = Arc::new(ClientHub::default());
-    let registry: Arc<dyn TypesRegistryClient> = Arc::new(MockRegistry::failing(
-        TypesRegistryError::internal("db down"),
-    ));
+    let registry: Arc<dyn TypesRegistryClient> = Arc::new(
+        MockTypesRegistryClient::new().with_list_error(TypesRegistryError::internal("db down")),
+    );
     hub.register::<dyn TypesRegistryClient>(registry);
 
     let svc = Service::new(hub, "hyperspot".into());
@@ -191,15 +177,9 @@ async fn get_plugin_returns_unavailable_when_not_in_hub() {
     // Registry resolves successfully, but the scoped client is absent.
     let instance_id = test_instance_id();
     let hub = Arc::new(ClientHub::default());
-    let entity = GtsEntity {
-        id: Uuid::nil(),
-        gts_id: instance_id.clone(),
-        segments: vec![],
-        is_schema: false,
-        content: plugin_content(&instance_id, "hyperspot"),
-        description: None,
-    };
-    let registry: Arc<dyn TypesRegistryClient> = Arc::new(MockRegistry::new(vec![entity]));
+    let instance = make_test_instance(&instance_id, plugin_content(&instance_id, "hyperspot"));
+    let registry: Arc<dyn TypesRegistryClient> =
+        Arc::new(MockTypesRegistryClient::new().with_instances([instance]));
     hub.register::<dyn TypesRegistryClient>(registry);
 
     let svc = Service::new(hub, "hyperspot".into());
@@ -221,7 +201,7 @@ async fn get_plugin_caches_resolved_instance() {
     let p2 = svc.get_plugin().await.unwrap();
 
     assert_eq!(
-        registry.list_calls.load(Ordering::SeqCst),
+        registry.list_instance_calls(),
         1,
         "resolve_plugin should be called exactly once; second call must use cached value"
     );

@@ -15,7 +15,7 @@ use modkit::plugins::{GtsPluginSelector, choose_plugin_instance};
 use modkit::telemetry::ThrottledLog;
 use modkit_macros::domain_model;
 use tracing::info;
-use types_registry_sdk::{ListQuery, TypesRegistryClient};
+use types_registry_sdk::{InstanceQuery, TypesRegistryClient};
 
 use super::error::DomainError;
 
@@ -83,16 +83,12 @@ impl Service {
         let plugin_type_id = AuthNResolverPluginSpecV1::gts_schema_id().clone();
 
         let instances = registry
-            .list(
-                ListQuery::new()
-                    .with_pattern(format!("{plugin_type_id}*"))
-                    .with_is_type(false),
-            )
+            .list_instances(InstanceQuery::new().with_pattern(format!("{plugin_type_id}*")))
             .await?;
 
         let gts_id = choose_plugin_instance::<AuthNResolverPluginSpecV1>(
             &self.vendor,
-            instances.iter().map(|e| (e.gts_id.as_str(), &e.content)),
+            instances.iter().map(|e| (e.id.as_ref(), &e.object)),
         )?;
         info!(plugin_gts_id = %gts_id, "Selected authn_resolver plugin instance");
 

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use types_registry_sdk::{ListQuery, TypesRegistryClient};
+use types_registry_sdk::{InstanceQuery, TypesRegistryClient};
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
@@ -716,27 +716,25 @@ impl TypeProvisioningServiceImpl {
 #[async_trait]
 impl TypeProvisioningService for TypeProvisioningServiceImpl {
     async fn list_upstreams(&self) -> Result<Vec<ProvisionedUpstream>, DomainError> {
-        let query = ListQuery::new()
-            .with_pattern(format!("{UPSTREAM_SCHEMA}*"))
-            .with_is_type(false);
+        let query = InstanceQuery::new().with_pattern(format!("{UPSTREAM_SCHEMA}*"));
 
-        let entities = self
+        let instances = self
             .registry
-            .list(query)
+            .list_instances(query)
             .await
             .map_err(|e| DomainError::internal(e.to_string()))?;
 
-        let mut result = Vec::with_capacity(entities.len());
-        for entity in entities {
-            let gts_instance_id = require_gts_instance_uuid(&entity.gts_id)?;
-            match serde_json::from_value::<UpstreamPayload>(entity.content.clone()) {
+        let mut result = Vec::with_capacity(instances.len());
+        for instance in instances {
+            let gts_instance_id = require_gts_instance_uuid(instance.id.as_ref())?;
+            match serde_json::from_value::<UpstreamPayload>(instance.object.clone()) {
                 Ok(payload) => {
                     result.push(payload.into_provisioned(Some(gts_instance_id)));
                 }
                 Err(e) => {
                     return Err(DomainError::validation(format!(
-                        "Upstream '{}': failed to deserialize GTS entity content: {e}",
-                        entity.gts_id
+                        "Upstream '{}': failed to deserialize GTS instance object: {e}",
+                        instance.id
                     )));
                 }
             }
@@ -746,27 +744,25 @@ impl TypeProvisioningService for TypeProvisioningServiceImpl {
     }
 
     async fn list_routes(&self) -> Result<Vec<ProvisionedRoute>, DomainError> {
-        let query = ListQuery::new()
-            .with_pattern(format!("{ROUTE_SCHEMA}*"))
-            .with_is_type(false);
+        let query = InstanceQuery::new().with_pattern(format!("{ROUTE_SCHEMA}*"));
 
-        let entities = self
+        let instances = self
             .registry
-            .list(query)
+            .list_instances(query)
             .await
             .map_err(|e| DomainError::internal(e.to_string()))?;
 
-        let mut result = Vec::with_capacity(entities.len());
-        for entity in entities {
-            let gts_instance_id = require_gts_instance_uuid(&entity.gts_id)?;
-            match serde_json::from_value::<RoutePayload>(entity.content.clone()) {
+        let mut result = Vec::with_capacity(instances.len());
+        for instance in instances {
+            let gts_instance_id = require_gts_instance_uuid(instance.id.as_ref())?;
+            match serde_json::from_value::<RoutePayload>(instance.object.clone()) {
                 Ok(payload) => {
-                    result.push(payload.into_provisioned(&entity.gts_id, gts_instance_id)?);
+                    result.push(payload.into_provisioned(instance.id.as_ref(), gts_instance_id)?);
                 }
                 Err(e) => {
                     return Err(DomainError::validation(format!(
-                        "Route '{}': failed to deserialize GTS entity content: {e}",
-                        entity.gts_id
+                        "Route '{}': failed to deserialize GTS instance object: {e}",
+                        instance.id
                     )));
                 }
             }
@@ -778,42 +774,19 @@ impl TypeProvisioningService for TypeProvisioningServiceImpl {
 
 #[cfg(test)]
 mod tests {
-    use types_registry_sdk::{GtsEntity, RegisterResult, TypesRegistryError};
+    use types_registry_sdk::{
+        GtsInstance, TypesRegistryError,
+        testing::{MockTypesRegistryClient, make_test_instance},
+    };
 
     use super::*;
 
-    type ListFn =
-        Box<dyn Fn(ListQuery) -> Result<Vec<GtsEntity>, TypesRegistryError> + Send + Sync>;
-
-    /// Mock `TypesRegistryClient` for unit testing.
-    struct MockRegistry {
-        list_fn: ListFn,
+    fn make_upstream_instance(gts_id: &str, object: serde_json::Value) -> GtsInstance {
+        make_test_instance(gts_id, object)
     }
 
-    #[async_trait]
-    impl TypesRegistryClient for MockRegistry {
-        async fn register(
-            &self,
-            _entities: Vec<serde_json::Value>,
-        ) -> Result<Vec<RegisterResult>, TypesRegistryError> {
-            unimplemented!()
-        }
-
-        async fn list(&self, query: ListQuery) -> Result<Vec<GtsEntity>, TypesRegistryError> {
-            (self.list_fn)(query)
-        }
-
-        async fn get(&self, _gts_id: &str) -> Result<GtsEntity, TypesRegistryError> {
-            unimplemented!()
-        }
-    }
-
-    fn make_upstream_entity(gts_id: &str, content: serde_json::Value) -> GtsEntity {
-        GtsEntity::new(Uuid::new_v4(), gts_id, vec![], false, content, None)
-    }
-
-    fn make_route_entity(gts_id: &str, content: serde_json::Value) -> GtsEntity {
-        GtsEntity::new(Uuid::new_v4(), gts_id, vec![], false, content, None)
+    fn make_route_instance(gts_id: &str, object: serde_json::Value) -> GtsInstance {
+        make_test_instance(gts_id, object)
     }
 
     fn upstream_content(tenant_id: Uuid) -> serde_json::Value {
@@ -851,9 +824,10 @@ mod tests {
         let content = upstream_content(tenant);
         let gts_id = format!("gts.x.core.oagw.upstream.v1~{instance_id}");
 
-        let registry = Arc::new(MockRegistry {
-            list_fn: Box::new(move |_| Ok(vec![make_upstream_entity(&gts_id, content.clone())])),
-        });
+        let registry = Arc::new(
+            MockTypesRegistryClient::new()
+                .with_instances([make_upstream_instance(&gts_id, content)]),
+        );
         let svc = TypeProvisioningServiceImpl::new(registry);
 
         let upstreams = svc.list_upstreams().await.unwrap();
@@ -865,14 +839,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_upstreams_rejects_non_uuid_instance_id() {
-        let registry = Arc::new(MockRegistry {
-            list_fn: Box::new(|_| {
-                Ok(vec![make_upstream_entity(
+        let registry =
+            Arc::new(
+                MockTypesRegistryClient::new().with_instances([make_upstream_instance(
                     "gts.x.core.oagw.upstream.v1~x.core.oagw.test.v1",
                     upstream_content(Uuid::new_v4()),
-                )])
-            }),
-        });
+                )]),
+            );
         let svc = TypeProvisioningServiceImpl::new(registry);
 
         let err = svc.list_upstreams().await.unwrap_err();
@@ -887,14 +860,13 @@ mod tests {
     async fn list_upstreams_rejects_invalid_content() {
         let instance_id = Uuid::new_v4();
         let gts_id = format!("gts.x.core.oagw.upstream.v1~{instance_id}");
-        let registry = Arc::new(MockRegistry {
-            list_fn: Box::new(move |_| {
-                Ok(vec![make_upstream_entity(
+        let registry =
+            Arc::new(
+                MockTypesRegistryClient::new().with_instances([make_upstream_instance(
                     &gts_id,
                     serde_json::json!({"invalid": true}),
-                )])
-            }),
-        });
+                )]),
+            );
         let svc = TypeProvisioningServiceImpl::new(registry);
 
         let err = svc.list_upstreams().await.unwrap_err();
@@ -907,9 +879,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_upstreams_returns_empty_when_none_registered() {
-        let registry = Arc::new(MockRegistry {
-            list_fn: Box::new(|_| Ok(vec![])),
-        });
+        let registry = Arc::new(MockTypesRegistryClient::new());
         let svc = TypeProvisioningServiceImpl::new(registry);
 
         let upstreams = svc.list_upstreams().await.unwrap();
@@ -918,9 +888,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_upstreams_propagates_registry_error() {
-        let registry = Arc::new(MockRegistry {
-            list_fn: Box::new(|_| Err(TypesRegistryError::internal("connection lost"))),
-        });
+        let registry = Arc::new(
+            MockTypesRegistryClient::new()
+                .with_list_error(TypesRegistryError::internal("connection lost")),
+        );
         let svc = TypeProvisioningServiceImpl::new(registry);
 
         let result = svc.list_upstreams().await;
@@ -935,9 +906,9 @@ mod tests {
         let content = route_content(tenant, upstream_id);
         let gts_id = format!("gts.x.core.oagw.route.v1~{route_instance_id}");
 
-        let registry = Arc::new(MockRegistry {
-            list_fn: Box::new(move |_| Ok(vec![make_route_entity(&gts_id, content.clone())])),
-        });
+        let registry = Arc::new(
+            MockTypesRegistryClient::new().with_instances([make_route_instance(&gts_id, content)]),
+        );
         let svc = TypeProvisioningServiceImpl::new(registry);
 
         let routes = svc.list_routes().await.unwrap();
@@ -950,14 +921,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_routes_rejects_non_uuid_instance_id() {
-        let registry = Arc::new(MockRegistry {
-            list_fn: Box::new(|_| {
-                Ok(vec![make_route_entity(
+        let registry =
+            Arc::new(
+                MockTypesRegistryClient::new().with_instances([make_route_instance(
                     "gts.x.core.oagw.route.v1~x.core.oagw.test.v1",
                     route_content(Uuid::new_v4(), Uuid::new_v4()),
-                )])
-            }),
-        });
+                )]),
+            );
         let svc = TypeProvisioningServiceImpl::new(registry);
 
         let err = svc.list_routes().await.unwrap_err();
@@ -972,14 +942,13 @@ mod tests {
     async fn list_routes_rejects_invalid_content() {
         let instance_id = Uuid::new_v4();
         let gts_id = format!("gts.x.core.oagw.route.v1~{instance_id}");
-        let registry = Arc::new(MockRegistry {
-            list_fn: Box::new(move |_| {
-                Ok(vec![make_route_entity(
+        let registry =
+            Arc::new(
+                MockTypesRegistryClient::new().with_instances([make_route_instance(
                     &gts_id,
                     serde_json::json!({"garbage": true}),
-                )])
-            }),
-        });
+                )]),
+            );
         let svc = TypeProvisioningServiceImpl::new(registry);
 
         let err = svc.list_routes().await.unwrap_err();
@@ -992,9 +961,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_routes_propagates_registry_error() {
-        let registry = Arc::new(MockRegistry {
-            list_fn: Box::new(|_| Err(TypesRegistryError::internal("timeout"))),
-        });
+        let registry = Arc::new(
+            MockTypesRegistryClient::new().with_list_error(TypesRegistryError::internal("timeout")),
+        );
         let svc = TypeProvisioningServiceImpl::new(registry);
 
         let result = svc.list_routes().await;
@@ -1003,33 +972,30 @@ mod tests {
 
     #[tokio::test]
     async fn list_upstreams_uses_correct_pattern() {
-        let registry = Arc::new(MockRegistry {
-            list_fn: Box::new(|query| {
-                assert_eq!(
-                    query.pattern.as_deref(),
-                    Some("gts.x.core.oagw.upstream.v1~*")
-                );
-                assert_eq!(query.is_type, Some(false));
-                Ok(vec![])
-            }),
-        });
-        let svc = TypeProvisioningServiceImpl::new(registry);
+        let registry = Arc::new(MockTypesRegistryClient::new());
+        let svc = TypeProvisioningServiceImpl::new(registry.clone());
 
         let _ = svc.list_upstreams().await;
+        let queries = registry.received_instance_queries();
+        assert_eq!(queries.len(), 1);
+        assert_eq!(
+            queries[0].pattern.as_deref(),
+            Some("gts.x.core.oagw.upstream.v1~*")
+        );
     }
 
     #[tokio::test]
     async fn list_routes_uses_correct_pattern() {
-        let registry = Arc::new(MockRegistry {
-            list_fn: Box::new(|query| {
-                assert_eq!(query.pattern.as_deref(), Some("gts.x.core.oagw.route.v1~*"));
-                assert_eq!(query.is_type, Some(false));
-                Ok(vec![])
-            }),
-        });
-        let svc = TypeProvisioningServiceImpl::new(registry);
+        let registry = Arc::new(MockTypesRegistryClient::new());
+        let svc = TypeProvisioningServiceImpl::new(registry.clone());
 
         let _ = svc.list_routes().await;
+        let queries = registry.received_instance_queries();
+        assert_eq!(queries.len(), 1);
+        assert_eq!(
+            queries[0].pattern.as_deref(),
+            Some("gts.x.core.oagw.route.v1~*")
+        );
     }
 
     // -----------------------------------------------------------------------

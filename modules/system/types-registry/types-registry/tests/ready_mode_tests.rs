@@ -6,7 +6,7 @@ mod common;
 
 use common::create_service;
 use serde_json::json;
-use types_registry_sdk::ListQuery;
+use types_registry::domain::model::ListQuery;
 
 // =============================================================================
 // Ready Mode Immediate Validation Tests

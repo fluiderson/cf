@@ -1,29 +1,24 @@
 //! Types Registry SDK
 //!
 //! This crate provides the public API for the `types-registry` module:
-//! - `TypesRegistryApi` trait for inter-module communication
-//! - `GtsEntity` model representing registered GTS entities
-//! - `ListQuery` for filtering entity listings
+//! - `TypesRegistryClient` trait for inter-module communication
+//! - `GtsTypeSchema` / `GtsInstance` typed entity models
+//! - `TypeSchemaQuery` / `InstanceQuery` for filtering
+//! - `GtsTypeId` / `GtsInstanceId` typed identifiers
 //! - `TypesRegistryError` for error handling
 //!
 //! ## Usage
 //!
 //! Consumers obtain the client from `ClientHub`:
 //! ```ignore
-//! use types_registry_sdk::TypesRegistryApi;
+//! use types_registry_sdk::{TypeSchemaQuery, TypesRegistryClient};
 //!
-//! // Get the client from ClientHub
-//! let client = hub.get::<dyn TypesRegistryApi>()?;
+//! let client = hub.get::<dyn TypesRegistryClient>()?;
 //!
-//! // Register entities
-//! let entities = client.register(&ctx, json_values).await?;
-//!
-//! // List entities with filtering
-//! let query = ListQuery::default().with_vendor("acme");
-//! let entities = client.list(&ctx, query).await?;
-//!
-//! // Get a single entity
-//! let entity = client.get(&ctx, "gts.acme.core.events.user_created.v1~").await?;
+//! let schema = client.get_type_schema("gts.acme.core.events.user.v1~").await?;
+//! let schemas = client
+//!     .list_type_schemas(TypeSchemaQuery::default().with_pattern("gts.acme.*"))
+//!     .await?;
 //! ```
 
 #![forbid(unsafe_code)]
@@ -33,10 +28,16 @@ pub mod api;
 pub mod error;
 pub mod models;
 
-// Re-export main types at crate root for convenience
+#[cfg(feature = "test-util")]
+pub mod testing;
+
 pub use api::TypesRegistryClient;
 pub use error::TypesRegistryError;
 pub use models::{
-    DynGtsEntity, DynRegisterResult, GtsEntity, GtsInstanceEntity, GtsTypeEntity, InstanceObject,
-    ListQuery, RegisterResult, RegisterSummary, SegmentMatchScope, TypeSchema,
+    GtsInstance, GtsTypeId, GtsTypeSchema, InstanceQuery, RegisterResult, RegisterSummary,
+    TypeSchemaQuery, is_type_schema_id,
 };
+
+// Re-export the underlying gts identifier types so consumers don't need a
+// direct dependency on `gts` for typed IDs.
+pub use gts::GtsInstanceId;

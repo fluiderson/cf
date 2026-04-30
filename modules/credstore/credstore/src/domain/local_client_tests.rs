@@ -6,12 +6,12 @@ use credstore_sdk::{
     SharingMode, TenantId,
 };
 use modkit::client_hub::{ClientHub, ClientScope};
-use types_registry_sdk::{GtsEntity, TypesRegistryClient};
-use uuid::Uuid;
+use types_registry_sdk::TypesRegistryClient;
+use types_registry_sdk::testing::{MockTypesRegistryClient, make_test_instance};
 
 use super::*;
 use crate::domain::Service;
-use crate::domain::test_support::{MockPlugin, MockRegistry, test_ctx};
+use crate::domain::test_support::{MockPlugin, test_ctx};
 
 fn make_client() -> CredStoreLocalClient {
     let hub = Arc::new(ClientHub::default());
@@ -21,25 +21,22 @@ fn make_client() -> CredStoreLocalClient {
 
 fn make_wired_client(plugin: Arc<dyn CredStorePluginClientV1>) -> CredStoreLocalClient {
     let instance_id = format!(
-        "{}test._.local_client_test.v1",
+        "{}test.credstore.mock.local_client.v1",
         CredStorePluginSpecV1::gts_schema_id()
     );
     let hub = Arc::new(ClientHub::default());
 
-    let entity = GtsEntity {
-        id: Uuid::nil(),
-        gts_id: instance_id.clone(),
-        segments: vec![],
-        is_schema: false,
-        content: serde_json::json!({
+    let instance = make_test_instance(
+        &instance_id,
+        serde_json::json!({
             "id": instance_id,
             "vendor": "hyperspot",
             "priority": 0,
             "properties": {}
         }),
-        description: None,
-    };
-    let reg: Arc<dyn TypesRegistryClient> = Arc::new(MockRegistry::new(vec![entity]));
+    );
+    let reg: Arc<dyn TypesRegistryClient> =
+        Arc::new(MockTypesRegistryClient::new().with_instances([instance]));
     hub.register::<dyn TypesRegistryClient>(reg);
     hub.register_scoped::<dyn CredStorePluginClientV1>(ClientScope::gts_id(&instance_id), plugin);
 

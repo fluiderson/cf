@@ -4,12 +4,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use gts::{GtsConfig, GtsID, GtsIdSegment, GtsOps, GtsWildcard};
 use parking_lot::Mutex;
-use types_registry_sdk::{GtsEntity, ListQuery, SegmentMatchScope};
+use uuid::Uuid;
 
 use super::debug_diagnostics::{
     log_instance_validation_failure, log_registration_failure, log_schema_validation_failure,
 };
 use crate::domain::error::DomainError;
+use crate::domain::model::{GtsEntity, ListQuery, SegmentMatchScope};
 use crate::domain::repo::GtsRepository;
 
 /// In-memory repository for GTS entities using gts-rust.
@@ -88,17 +89,28 @@ impl InMemoryGtsRepository {
         None
     }
 
-    /// Checks if an entity matches the given query filters.
-    fn matches_query(entity: &GtsEntity, query: &ListQuery) -> bool {
-        if let Some(ref pattern) = query.pattern
-            && let Ok(wildcard) = GtsWildcard::new(pattern)
-        {
-            if let Ok(gts_id) = GtsID::new(&entity.gts_id) {
-                if !gts_id.wildcard_match(&wildcard) {
-                    return false;
+    /// Checks if an entity matches a pre-parsed wildcard plus the kind filter.
+    ///
+    /// The pattern is parsed once at the start of [`Self::list`] (so an
+    /// invalid pattern fails the whole call rather than silently passing
+    /// through every entity) and the resulting [`GtsWildcard`] is threaded
+    /// in here.
+    fn matches_query(
+        entity: &GtsEntity,
+        wildcard: Option<&GtsWildcard>,
+        query: &ListQuery,
+    ) -> bool {
+        if let Some(wildcard) = wildcard {
+            match GtsID::new(&entity.gts_id) {
+                Ok(gts_id) => {
+                    if !gts_id.wildcard_match(wildcard) {
+                        return false;
+                    }
                 }
-            } else {
-                return false;
+                // Stored entity has an unparseable GTS id — treat as no-match
+                // for any filtered query (it shouldn't have been registered,
+                // but better to hide than to crash on rendering).
+                Err(_) => return false,
             }
         }
 
@@ -202,16 +214,53 @@ impl GtsRepository for InMemoryGtsRepository {
             return Self::to_gts_entity(gts_id, &entity.content);
         }
 
-        Err(DomainError::not_found(gts_id))
+        Err(DomainError::not_found_by_id(gts_id))
+    }
+
+    // TODO(#1630): replace linear scan with O(1) UUID lookup once gts-rust
+    // exposes a UUID-keyed index on `GtsOps`. Today every lookup re-parses
+    // each gts_id and recomputes UUID v5 (SHA-1) per entity.
+    // https://github.com/cyberfabric/cyberfabric-core/issues/1630
+    fn get_by_uuid(&self, id: Uuid) -> Result<GtsEntity, DomainError> {
+        let persistent = self.persistent.lock();
+        for (gts_id, gts_entity) in persistent.store.items() {
+            // UUIDs are deterministic v5 from gts_id; recompute and compare.
+            if let Ok(parsed) = GtsID::new(gts_id)
+                && parsed.to_uuid() == id
+            {
+                return Self::to_gts_entity(gts_id, &gts_entity.content);
+            }
+        }
+        Err(DomainError::not_found_by_uuid(id))
     }
 
     fn list(&self, query: &ListQuery) -> Result<Vec<GtsEntity>, DomainError> {
+        // Validate the pattern once up front. `None` means "no filter".
+        // `Some("")` is a caller bug — it's distinct from `None` but can't
+        // mean anything meaningful, and `GtsWildcard::new("")` may not
+        // surface a user-friendly diagnostic. An invalid wildcard (multiple
+        // `*`s, mid-pattern `*`, segment-boundary violation — see GTS spec
+        // section 10) is also a caller bug that previously slipped through
+        // as "no filter applied"; surface both as `InvalidQuery` so they
+        // can't hide.
+        let wildcard = match query.pattern.as_deref() {
+            Some("") => {
+                return Err(DomainError::invalid_query(
+                    "pattern is empty (use `None` to mean \"no filter\")",
+                ));
+            }
+            Some(p) => Some(GtsWildcard::new(p).map_err(|e| {
+                DomainError::invalid_query(format!("invalid GTS wildcard pattern `{p}`: {e}"))
+            })?),
+            None => None,
+        };
+
         let persistent = self.persistent.lock();
         let mut results = Vec::new();
 
         for (gts_id, gts_entity) in persistent.store.items() {
             if let Ok(entity) = Self::to_gts_entity(gts_id, &gts_entity.content)
-                && Self::matches_query(&entity, query)
+                && Self::matches_query(&entity, wildcard.as_ref(), query)
             {
                 results.push(entity);
             }
@@ -232,20 +281,26 @@ impl GtsRepository for InMemoryGtsRepository {
     fn switch_to_ready(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
 
-        // Collect all GTS IDs, separating schemas (ending with ~) from instances
-        let (schema_ids, instance_ids): (Vec<String>, Vec<String>) = {
+        // Collect all GTS IDs from temporary, sorted lexicographically.
+        //
+        // Lexicographic order on GTS chain ids implies parent-before-child:
+        // a parent type-schema id is a strict prefix of its derived schema's
+        // id (parent ends with `~`, derived continues past it), and a
+        // type-schema id is a strict prefix of any instance declared from
+        // it. Walking ids in lex order therefore registers every parent
+        // before any of its descendants, in a single pass — no separate
+        // schemas-then-instances split needed.
+        let sorted_ids: Vec<String> = {
             let temporary = self.temporary.lock();
-            temporary
-                .store
-                .items()
-                .map(|(id, _)| id.clone())
-                .partition(|id| id.ends_with('~'))
+            let mut ids: Vec<String> = temporary.store.items().map(|(id, _)| id.clone()).collect();
+            ids.sort();
+            ids
         };
 
         // Validate all entities in temporary storage
         {
             let mut temporary = self.temporary.lock();
-            for gts_id in schema_ids.iter().chain(instance_ids.iter()) {
+            for gts_id in &sorted_ids {
                 let result = temporary.validate_entity(gts_id);
                 if !result.ok {
                     // Debug logging for validation failure
@@ -271,38 +326,26 @@ impl GtsRepository for InMemoryGtsRepository {
             return Err(errors);
         }
 
-        // Move to persistent: schemas first, then instances
-        // This ensures schemas are available when validating instances
+        // Move to persistent in the same lex order (parents before children).
         {
             let mut temporary = self.temporary.lock();
             let mut persistent = self.persistent.lock();
 
-            // Add schemas first (with validation)
-            for gts_id in &schema_ids {
+            for gts_id in &sorted_ids {
                 if let Some(entity) = temporary.store.get(gts_id) {
                     let content = entity.content.clone();
                     let result = persistent.add_entity(&content, true);
                     if !result.ok {
-                        // Debug logging for schema commit failure
-                        log_schema_validation_failure(gts_id, &content, &result.error);
-                        errors.push(format!("{gts_id}: {}", result.error));
-                    }
-                }
-            }
-
-            // Then add instances (with validation against already-added schemas)
-            for gts_id in &instance_ids {
-                if let Some(entity) = temporary.store.get(gts_id) {
-                    let content = entity.content.clone();
-                    let result = persistent.add_entity(&content, true);
-                    if !result.ok {
-                        // Debug logging for instance commit failure
-                        log_instance_validation_failure(
-                            gts_id,
-                            &content,
-                            &result.error,
-                            &mut persistent,
-                        );
+                        if gts_id.ends_with('~') {
+                            log_schema_validation_failure(gts_id, &content, &result.error);
+                        } else {
+                            log_instance_validation_failure(
+                                gts_id,
+                                &content,
+                                &result.error,
+                                &mut persistent,
+                            );
+                        }
                         errors.push(format!("{gts_id}: {}", result.error));
                     }
                 }
@@ -445,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn test_list_with_filters() {
+    fn test_list_default_returns_all() {
         let repo = InMemoryGtsRepository::new(default_config());
 
         let type1 = json!({
@@ -463,13 +506,7 @@ mod tests {
         repo.register(&type2, false).unwrap();
         repo.switch_to_ready().unwrap();
 
-        let query = ListQuery::default().with_vendor("acme");
-        let results = repo.list(&query).unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].vendor(), Some("acme"));
-
-        let query = ListQuery::default();
-        let results = repo.list(&query).unwrap();
+        let results = repo.list(&ListQuery::default()).unwrap();
         assert_eq!(results.len(), 2);
     }
 
@@ -479,7 +516,7 @@ mod tests {
         repo.switch_to_ready().unwrap();
 
         let result = repo.get("gts.unknown.pkg.ns.type.v1~");
-        assert!(matches!(result, Err(DomainError::NotFound(_))));
+        assert!(matches!(result, Err(DomainError::NotFound { .. })));
     }
 
     #[test]
@@ -582,50 +619,6 @@ mod tests {
     }
 
     #[test]
-    fn test_list_with_package_filter() {
-        let repo = InMemoryGtsRepository::new(default_config());
-
-        let entity = json!({
-            "$id": "gts://gts.acme.core.events.user_created.v1~",
-            "$schema": JSON_SCHEMA_DRAFT_07,
-            "type": "object"
-        });
-
-        repo.register(&entity, false).unwrap();
-        repo.switch_to_ready().unwrap();
-
-        let query = ListQuery::default().with_package("core");
-        let results = repo.list(&query).unwrap();
-        assert_eq!(results.len(), 1);
-
-        let query = ListQuery::default().with_package("other");
-        let results = repo.list(&query).unwrap();
-        assert_eq!(results.len(), 0);
-    }
-
-    #[test]
-    fn test_list_with_namespace_filter() {
-        let repo = InMemoryGtsRepository::new(default_config());
-
-        let entity = json!({
-            "$id": "gts://gts.acme.core.events.user_created.v1~",
-            "$schema": JSON_SCHEMA_DRAFT_07,
-            "type": "object"
-        });
-
-        repo.register(&entity, false).unwrap();
-        repo.switch_to_ready().unwrap();
-
-        let query = ListQuery::default().with_namespace("events");
-        let results = repo.list(&query).unwrap();
-        assert_eq!(results.len(), 1);
-
-        let query = ListQuery::default().with_namespace("other");
-        let results = repo.list(&query).unwrap();
-        assert_eq!(results.len(), 0);
-    }
-
-    #[test]
     fn test_list_with_pattern_filter() {
         let repo = InMemoryGtsRepository::new(default_config());
 
@@ -648,23 +641,61 @@ mod tests {
     }
 
     #[test]
-    fn test_list_with_segment_scope_primary() {
+    fn test_list_with_empty_pattern_returns_invalid_query() {
+        // `Some("")` is not equivalent to `None`. Empty pattern is a caller
+        // bug (often a default-constructed value or a malformed query
+        // string) and must be rejected, not silently treated as "no filter".
         let repo = InMemoryGtsRepository::new(default_config());
-
-        let entity = json!({
-            "$id": "gts://gts.acme.core.events.user_created.v1~",
-            "$schema": JSON_SCHEMA_DRAFT_07,
-            "type": "object"
-        });
-
-        repo.register(&entity, false).unwrap();
         repo.switch_to_ready().unwrap();
 
-        let query = ListQuery::default()
-            .with_vendor("acme")
-            .with_segment_scope(SegmentMatchScope::Primary);
-        let results = repo.list(&query).unwrap();
-        assert_eq!(results.len(), 1);
+        let query = ListQuery::default().with_pattern("");
+        match repo.list(&query) {
+            Err(DomainError::InvalidQuery(msg)) => {
+                assert!(msg.contains("empty"), "msg should mention empty: {msg}");
+            }
+            Err(e) => panic!("expected InvalidQuery, got {e:?}"),
+            Ok(items) => panic!(
+                "expected InvalidQuery error; got {} items (silent fall-through)",
+                items.len()
+            ),
+        }
+    }
+
+    #[test]
+    // Test exists specifically to assert that an invalid wildcard pattern is
+    // surfaced as `InvalidQuery`; the literal must stay in source.
+    #[allow(unknown_lints, de0901_gts_string_pattern)]
+    fn test_list_with_invalid_pattern_returns_invalid_query() {
+        // GTS spec section 10: at most one trailing wildcard. Multiple `*` or
+        // mid-pattern `*` must be surfaced as InvalidQuery, not silently
+        // skipped (which would have made every entity match).
+        let repo = InMemoryGtsRepository::new(default_config());
+        repo.register(
+            &json!({
+                "$id": "gts://gts.acme.core.events.x.v1~",
+                "$schema": JSON_SCHEMA_DRAFT_07,
+                "type": "object"
+            }),
+            false,
+        )
+        .unwrap();
+        repo.switch_to_ready().unwrap();
+
+        // Multi-wildcard pattern → invalid per spec.
+        let query = ListQuery::default().with_pattern("gts.*.*.rg.*");
+        match repo.list(&query) {
+            Err(DomainError::InvalidQuery(msg)) => {
+                assert!(
+                    msg.contains("gts.*.*.rg.*"),
+                    "msg should cite the input: {msg}"
+                );
+            }
+            Err(e) => panic!("expected InvalidQuery, got {e:?}"),
+            Ok(items) => panic!(
+                "expected InvalidQuery error; got {} items (silent fall-through)",
+                items.len()
+            ),
+        }
     }
 
     #[test]

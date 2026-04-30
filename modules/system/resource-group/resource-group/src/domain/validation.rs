@@ -119,12 +119,13 @@ pub async fn validate_metadata_via_gts(
         return Ok(());
     };
 
-    // Fetch the GTS entity — its content contains the resolved schema
-    // including allOf composition and $ref resolution from types-registry.
-    let entity = match types_registry.get(type_code).await {
-        Ok(entity) => entity,
+    // Fetch the GTS schema. Local client pre-links ancestors via Arc, so
+    // `effective_properties()` returns the chain-resolved property map (own
+    // overrides + inherited).
+    let schema = match types_registry.get_type_schema(type_code).await {
+        Ok(schema) => schema,
         // No registered schema for this type -- skip metadata validation.
-        Err(types_registry_sdk::TypesRegistryError::NotFound(_)) => return Ok(()),
+        Err(types_registry_sdk::TypesRegistryError::GtsTypeSchemaNotFound(_)) => return Ok(()),
         Err(e) => {
             return Err(DomainError::validation(format!(
                 "Failed to resolve GTS type '{type_code}' for metadata validation: {e}"
@@ -132,13 +133,10 @@ pub async fn validate_metadata_via_gts(
         }
     };
 
-    // Extract metadata sub-schema from the GTS entity content.
-    // The chained RG type schema defines a `metadata` property within
-    // its `properties` object.
-    let metadata_schema = entity
-        .content
-        .get("properties")
-        .and_then(|p| p.get("metadata"));
+    // The chained RG type schema may declare `metadata` at any level of
+    // the inheritance chain — `effective_properties` collects them all.
+    let merged = schema.effective_properties();
+    let metadata_schema = merged.get("metadata");
 
     let Some(metadata_schema) = metadata_schema else {
         // No metadata property in the schema — any metadata accepted.

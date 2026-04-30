@@ -34,12 +34,14 @@ use crate::infra::InMemoryGtsRepository;
 )]
 pub struct TypesRegistryModule {
     service: OnceLock<Arc<TypesRegistryService>>,
+    local_client: OnceLock<Arc<TypesRegistryLocalClient>>,
 }
 
 impl Default for TypesRegistryModule {
     fn default() -> Self {
         Self {
             service: OnceLock::new(),
+            local_client: OnceLock::new(),
         }
     }
 }
@@ -49,13 +51,22 @@ impl Module for TypesRegistryModule {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
         let cfg: TypesRegistryConfig = ctx.config_or_default()?;
         debug!(
-            "Loaded types_registry config: entity_id_fields={:?}, schema_id_fields={:?}",
-            cfg.entity_id_fields, cfg.schema_id_fields
+            "Loaded types_registry config: entity_id_fields={:?}, schema_id_fields={:?}, \
+             local_client.cache.type_schemas={{capacity={}, ttl={:?}}}, \
+             local_client.cache.instances={{capacity={}, ttl={:?}}}",
+            cfg.entity_id_fields,
+            cfg.schema_id_fields,
+            cfg.local_client.cache.type_schemas.capacity,
+            cfg.local_client.cache.type_schemas.ttl,
+            cfg.local_client.cache.instances.capacity,
+            cfg.local_client.cache.instances.ttl,
         );
 
         let gts_config = cfg.to_gts_config();
         let static_entities = cfg.entities.clone();
         let default_tenant_id = cfg.default_tenant_id;
+        let type_schemas_cache_cfg = cfg.local_client.cache.type_schemas.to_cache_config();
+        let instances_cache_cfg = cfg.local_client.cache.instances.to_cache_config();
 
         let repo = Arc::new(InMemoryGtsRepository::new(gts_config));
         let service = Arc::new(TypesRegistryService::new(repo, cfg));
@@ -105,7 +116,16 @@ impl Module for TypesRegistryModule {
             .set(service.clone())
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
 
-        let api: Arc<dyn TypesRegistryClient> = Arc::new(TypesRegistryLocalClient::new(service));
+        let local_client = Arc::new(TypesRegistryLocalClient::with_cache_configs(
+            service,
+            type_schemas_cache_cfg,
+            instances_cache_cfg,
+        ));
+        self.local_client
+            .set(local_client.clone())
+            .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
+
+        let api: Arc<dyn TypesRegistryClient> = local_client;
         ctx.client_hub().register::<dyn TypesRegistryClient>(api);
 
         Ok(())
@@ -148,6 +168,14 @@ impl SystemCapability for TypesRegistryModule {
             }
             anyhow::anyhow!("Failed to switch to ready mode: {e}")
         })?;
+
+        // Drop any cached entries built before the ready transition (e.g.
+        // best-effort builds that may have had unresolved parents). After
+        // switch_to_ready, the persistent store has the final picture and
+        // subsequent get_*/list_* calls rebuild against it.
+        if let Some(client) = self.local_client.get() {
+            client.clear_caches();
+        }
 
         info!("types_registry switched to ready mode successfully");
         Ok(())

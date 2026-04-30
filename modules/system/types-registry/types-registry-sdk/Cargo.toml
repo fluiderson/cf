@@ -17,6 +17,13 @@ name = "types_registry_sdk"
 [lints]
 workspace = true
 
+[features]
+# Default: production build, no test utilities.
+default = []
+# Exposes `pub mod testing` with a stateful `MockTypesRegistryClient` mock for
+# consumers that need a `dyn TypesRegistryClient` in their unit tests.
+test-util = []
+
 [dependencies]
 # Core dependencies for API trait
 async-trait = { workspace = true }

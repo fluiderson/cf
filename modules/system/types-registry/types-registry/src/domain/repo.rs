@@ -1,6 +1,8 @@
 //! Repository trait for GTS entity storage.
 
-use types_registry_sdk::{GtsEntity, ListQuery};
+use uuid::Uuid;
+
+use crate::domain::model::{GtsEntity, ListQuery};
 
 use super::error::DomainError;
 
@@ -37,6 +39,13 @@ pub trait GtsRepository: Send + Sync {
     ///
     /// Returns `NotFound` if the entity doesn't exist.
     fn get(&self, gts_id: &str) -> Result<GtsEntity, DomainError>;
+
+    /// Retrieves a GTS entity by its deterministic UUID v5.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if no entity is registered with the given UUID.
+    fn get_by_uuid(&self, id: Uuid) -> Result<GtsEntity, DomainError>;
 
     /// Lists GTS entities matching the given query.
     ///

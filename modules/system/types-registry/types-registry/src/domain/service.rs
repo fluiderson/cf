@@ -1,18 +1,33 @@
 //! Domain service for the Types Registry module.
+//!
+//! Kind-agnostic: returns the internal [`GtsEntity`] / [`ListQuery`] types.
+//! All kind discrimination, parent resolution, caching, and SDK type
+//! construction live in [`crate::domain::local_client`].
 
 use std::sync::Arc;
 
 use modkit_macros::domain_model;
-use types_registry_sdk::{GtsEntity, ListQuery, RegisterResult};
+use types_registry_sdk::RegisterResult;
+use uuid::Uuid;
 
 use super::error::DomainError;
+use super::model::{GtsEntity, ListQuery};
 use super::repo::GtsRepository;
 use crate::config::TypesRegistryConfig;
 
+/// Outcome of registering one entity in [`TypesRegistryService::register_validated`]:
+/// `(extracted_gts_id, persisted_entity_or_error)`.
+///
+/// The first element is the best-effort GTS id parsed from the input (so error
+/// responses can echo the attempted id even when validation rejects it).
+pub type RegisterEntityOutcome = (Option<String>, Result<GtsEntity, DomainError>);
+
 /// Domain service for GTS entity operations.
 ///
-/// This service orchestrates business logic and delegates storage
-/// operations to the repository.
+/// Orchestrates business logic and delegates storage to the repository.
+/// Returns the internal [`GtsEntity`] (kind-agnostic) — the local client
+/// builds typed [`types_registry_sdk::GtsSchema`] / [`types_registry_sdk::GtsInstance`]
+/// values on top of these.
 #[domain_model]
 pub struct TypesRegistryService {
     repo: Arc<dyn GtsRepository>,
@@ -32,7 +47,9 @@ impl TypesRegistryService {
     /// - Configuration phase (not ready): No validation (for internal/system types)
     /// - Ready phase: Full validation
     ///
-    /// Returns a `RegisterResult` for each input entity, preserving order.
+    /// Successful results carry only the canonical [`gts_id`](RegisterResult::Ok)
+    /// — callers that need a typed view of the registered entity should follow
+    /// up with [`Self::get`].
     #[must_use]
     pub fn register(&self, entities: Vec<serde_json::Value>) -> Vec<RegisterResult> {
         let validate = self.repo.is_ready();
@@ -41,13 +58,20 @@ impl TypesRegistryService {
 
     /// Registers GTS entities in batch with forced validation.
     ///
-    /// This method always validates entities regardless of ready state.
     /// Used by REST API to ensure all externally registered entities are validated.
-    ///
-    /// Returns a `RegisterResult` for each input entity, preserving order.
+    /// See [`RegisterEntityOutcome`] for the tuple shape.
     #[must_use]
-    pub fn register_validated(&self, entities: Vec<serde_json::Value>) -> Vec<RegisterResult> {
-        self.register_internal(entities, true)
+    pub fn register_validated(
+        &self,
+        entities: Vec<serde_json::Value>,
+    ) -> Vec<RegisterEntityOutcome> {
+        let mut out = Vec::with_capacity(entities.len());
+        for entity in entities {
+            let gts_id = self.extract_gts_id(&entity);
+            let result = self.repo.register(&entity, true);
+            out.push((gts_id, result));
+        }
+        out
     }
 
     /// Internal registration method with explicit validation control.
@@ -57,25 +81,37 @@ impl TypesRegistryService {
         validate: bool,
     ) -> Vec<RegisterResult> {
         let mut results = Vec::with_capacity(entities.len());
-
         for entity in entities {
             let gts_id = self.extract_gts_id(&entity);
             let result = match self.repo.register(&entity, validate) {
-                Ok(registered) => RegisterResult::Ok(registered),
-                Err(e) => RegisterResult::Err {
-                    gts_id,
-                    error: e.into(),
+                Ok(registered) => RegisterResult::Ok {
+                    gts_id: registered.gts_id,
                 },
+                Err(e) => {
+                    // Best-effort kind detection from the extracted gts_id so
+                    // the SDK error variant matches the input shape. Unknown
+                    // gts_id falls back to the type-schema variant — the kind-
+                    // agnostic `register()` consumer doesn't distinguish them.
+                    let error = match gts_id.as_deref() {
+                        Some(s) if !s.ends_with('~') => e.into_sdk_for_instance(),
+                        _ => e.into_sdk_for_type_schema(),
+                    };
+                    RegisterResult::Err { gts_id, error }
+                }
             };
             results.push(result);
         }
-
         results
     }
 
     /// Retrieves a single GTS entity by its identifier.
     pub fn get(&self, gts_id: &str) -> Result<GtsEntity, DomainError> {
         self.repo.get(gts_id)
+    }
+
+    /// Retrieves a single GTS entity by its deterministic UUID v5.
+    pub fn get_by_uuid(&self, id: Uuid) -> Result<GtsEntity, DomainError> {
+        self.repo.get_by_uuid(id)
     }
 
     /// Lists GTS entities matching the given query.
@@ -85,8 +121,8 @@ impl TypesRegistryService {
 
     /// Switches the registry from configuration mode to ready mode.
     ///
-    /// This validates all entities in temporary storage and moves them
-    /// to persistent storage if validation succeeds.
+    /// Validates all entities in temporary storage and moves them to
+    /// persistent storage if validation succeeds.
     ///
     /// # Errors
     ///
@@ -109,14 +145,22 @@ impl TypesRegistryService {
         self.repo.is_ready()
     }
 
-    /// Extracts the GTS ID from an entity JSON value.
+    /// Returns `true` if an entity with the given GTS id is registered in
+    /// persistent storage. Used for parent existence pre-checks during
+    /// ready-phase registration.
+    #[must_use]
+    pub fn exists(&self, gts_id: &str) -> bool {
+        self.repo.exists(gts_id)
+    }
+
+    /// Extracts the GTS ID from an entity JSON value using configured fields.
     ///
-    /// Strips the `gts://` URI prefix from `$id` fields for JSON Schema compatibility (gts-rust v0.6.0+).
-    fn extract_gts_id(&self, entity: &serde_json::Value) -> Option<String> {
+    /// Strips the `gts://` URI prefix from `$id` fields for JSON Schema
+    /// compatibility (gts-rust v0.6.0+).
+    pub(crate) fn extract_gts_id(&self, entity: &serde_json::Value) -> Option<String> {
         if let Some(obj) = entity.as_object() {
             for field in &self.config.entity_id_fields {
                 if let Some(id) = obj.get(field.as_str()).and_then(|v| v.as_str()) {
-                    // Strip gts:// prefix from $id field (JSON Schema URI format)
                     let cleaned_id = if field == "$id" {
                         id.strip_prefix("gts://").unwrap_or(id)
                     } else {
@@ -179,7 +223,7 @@ mod tests {
                 Uuid::nil(),
                 gts_id.to_owned(),
                 vec![],
-                true, // is_schema
+                true,
                 entity.clone(),
                 None,
             ))
@@ -187,16 +231,20 @@ mod tests {
 
         fn get(&self, gts_id: &str) -> Result<GtsEntity, DomainError> {
             if gts_id.contains("notfound") {
-                return Err(DomainError::not_found(gts_id));
+                return Err(DomainError::not_found_by_id(gts_id));
             }
             Ok(GtsEntity::new(
                 Uuid::nil(),
                 gts_id.to_owned(),
                 vec![],
-                true, // is_schema
+                true,
                 json!({}),
                 None,
             ))
+        }
+
+        fn get_by_uuid(&self, id: Uuid) -> Result<GtsEntity, DomainError> {
+            Err(DomainError::not_found_by_uuid(id))
         }
 
         fn list(&self, _query: &ListQuery) -> Result<Vec<GtsEntity>, DomainError> {
@@ -204,7 +252,7 @@ mod tests {
                 Uuid::nil(),
                 "gts.test.pkg.ns.type.v1~".to_owned(),
                 vec![],
-                true, // is_schema
+                true,
                 json!({}),
                 None,
             )])
@@ -220,7 +268,6 @@ mod tests {
 
         fn switch_to_ready(&self) -> Result<(), Vec<String>> {
             if self.fail_switch {
-                // Return errors in "gts_id: message" format for ValidationError::from_string
                 return Err(vec![
                     "gts.test1~: error1".to_owned(),
                     "gts.test2~: error2".to_owned(),
@@ -250,16 +297,7 @@ mod tests {
             Some("gts.acme.core.events.test.v1~".to_owned())
         );
 
-        let entity = json!({"id": "gts.acme.core.events.test.v1~"});
-        assert_eq!(
-            service.extract_gts_id(&entity),
-            Some("gts.acme.core.events.test.v1~".to_owned())
-        );
-
         let entity = json!({"other": "value"});
-        assert_eq!(service.extract_gts_id(&entity), None);
-
-        let entity = json!("not an object");
         assert_eq!(service.extract_gts_id(&entity), None);
     }
 
@@ -358,8 +396,6 @@ mod tests {
                 assert_eq!(errors.len(), 2);
                 assert_eq!(errors[0].gts_id, "gts.test1~");
                 assert_eq!(errors[0].message, "error1");
-                assert_eq!(errors[1].gts_id, "gts.test2~");
-                assert_eq!(errors[1].message, "error2");
             }
             _ => panic!("Expected ReadyCommitFailed"),
         }

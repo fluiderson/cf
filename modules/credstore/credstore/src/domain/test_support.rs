@@ -1,10 +1,9 @@
 //! Shared test infrastructure for domain-layer unit tests.
 //!
-//! Provides `MockRegistry` and `MockPlugin` used by both `service` and
-//! `local_client` test modules.
+//! For the GTS registry mock, use `MockTypesRegistryClient` and
+//! `make_test_instance` from `types_registry_sdk::testing` directly.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use credstore_sdk::{
@@ -12,9 +11,6 @@ use credstore_sdk::{
     TenantId,
 };
 use modkit_security::SecurityContext;
-use types_registry_sdk::{
-    GtsEntity, ListQuery, RegisterResult, TypesRegistryClient, TypesRegistryError,
-};
 use uuid::Uuid;
 
 use credstore_sdk::SecretRef;
@@ -33,60 +29,6 @@ pub fn test_ctx() -> SecurityContext {
         .subject_tenant_id(Uuid::nil())
         .build()
         .unwrap()
-}
-
-// ── MockRegistry ──────────────────────────────────────────────────────────────
-
-pub struct MockRegistry {
-    pub instances: Vec<GtsEntity>,
-    pub list_calls: AtomicUsize,
-    list_error: Option<TypesRegistryError>,
-}
-
-impl MockRegistry {
-    #[must_use]
-    pub fn new(instances: Vec<GtsEntity>) -> Self {
-        Self {
-            instances,
-            list_calls: AtomicUsize::new(0),
-            list_error: None,
-        }
-    }
-
-    #[must_use]
-    pub fn failing(err: TypesRegistryError) -> Self {
-        Self {
-            instances: vec![],
-            list_calls: AtomicUsize::new(0),
-            list_error: Some(err),
-        }
-    }
-}
-
-#[async_trait]
-impl TypesRegistryClient for MockRegistry {
-    async fn list(&self, _query: ListQuery) -> Result<Vec<GtsEntity>, TypesRegistryError> {
-        self.list_calls.fetch_add(1, Ordering::SeqCst);
-        if let Some(ref e) = self.list_error {
-            return Err(e.clone());
-        }
-        Ok(self.instances.clone())
-    }
-
-    async fn get(&self, gts_id: &str) -> Result<GtsEntity, TypesRegistryError> {
-        self.instances
-            .iter()
-            .find(|e| e.gts_id == gts_id)
-            .cloned()
-            .ok_or_else(|| TypesRegistryError::not_found(gts_id))
-    }
-
-    async fn register(
-        &self,
-        _entities: Vec<serde_json::Value>,
-    ) -> Result<Vec<RegisterResult>, TypesRegistryError> {
-        Ok(vec![])
-    }
 }
 
 // ── MockPlugin ────────────────────────────────────────────────────────────────

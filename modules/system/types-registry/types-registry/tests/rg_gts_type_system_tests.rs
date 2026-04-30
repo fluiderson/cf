@@ -13,7 +13,7 @@ mod common;
 
 use common::create_service;
 use serde_json::json;
-use types_registry_sdk::ListQuery;
+use types_registry::domain::model::ListQuery;
 
 // =============================================================================
 // Helpers: schema factories (from ADR-001, metadata approach)
@@ -366,26 +366,26 @@ async fn test_vendor_isolation_across_rg_types() {
     let service = setup_rg_type_system();
     assert!(
         service
-            .list(&ListQuery::default().with_vendor("x"))
+            .list(&ListQuery::default().with_pattern("gts.x.*"))
             .unwrap()
             .len()
             >= 3
     );
     assert!(
         !service
-            .list(&ListQuery::default().with_vendor("y"))
+            .list(&ListQuery::default().with_pattern("gts.y.*"))
             .unwrap()
             .is_empty()
     );
     assert!(
         !service
-            .list(&ListQuery::default().with_vendor("w"))
+            .list(&ListQuery::default().with_pattern("gts.w.*"))
             .unwrap()
             .is_empty()
     );
     assert!(
         service
-            .list(&ListQuery::default().with_vendor("z"))
+            .list(&ListQuery::default().with_pattern("gts.z.*"))
             .unwrap()
             .len()
             >= 2
@@ -831,10 +831,14 @@ async fn test_wildcard_query_all_rg_chained_types() {
 }
 
 #[tokio::test]
-async fn test_query_by_namespace_rg() {
+async fn test_query_by_x_core_rg_prefix() {
+    // GTS spec section 10 requires a single trailing `*`, so we can only
+    // express vendor/package/namespace as a contiguous prefix — here all
+    // schemas under `gts.x.core.rg.*`, which covers the rg base type, the
+    // rg branch type, and every chain derived from `gts.x.core.rg.type.v1~`.
     let service = setup_rg_type_system();
     let results = service
-        .list(&ListQuery::default().with_namespace("rg"))
+        .list(&ListQuery::default().with_pattern("gts.x.core.rg.*"))
         .unwrap();
     assert!(!results.is_empty());
 }

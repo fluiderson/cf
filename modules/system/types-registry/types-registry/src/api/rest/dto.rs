@@ -3,7 +3,9 @@
 use uuid::Uuid;
 
 use gts::GtsIdSegment;
-use types_registry_sdk::{GtsEntity, RegisterResult, RegisterSummary, SegmentMatchScope};
+use types_registry_sdk::RegisterSummary;
+
+use crate::domain::model::{GtsEntity, ListQuery, SegmentMatchScope};
 
 /// DTO for a GTS ID segment.
 #[derive(Debug, Clone)]
@@ -58,10 +60,10 @@ pub struct GtsEntityDto {
 impl From<GtsEntity> for GtsEntityDto {
     fn from(entity: GtsEntity) -> Self {
         Self {
-            id: entity.id,
+            id: entity.uuid,
             gts_id: entity.gts_id.clone(),
             segments: entity.segments.iter().map(GtsIdSegmentDto::from).collect(),
-            is_schema: entity.is_schema,
+            is_schema: entity.is_type_schema,
             content: entity.content.clone(),
             description: entity.description.clone(),
         }
@@ -96,20 +98,6 @@ pub enum RegisterResultDto {
         /// Error message.
         error: String,
     },
-}
-
-impl From<RegisterResult> for RegisterResultDto {
-    fn from(result: RegisterResult) -> Self {
-        match result {
-            RegisterResult::Ok(entity) => Self::Ok {
-                entity: entity.into(),
-            },
-            RegisterResult::Err { gts_id, error } => Self::Error {
-                gts_id,
-                error: error.to_string(),
-            },
-        }
-    }
 }
 
 /// Response DTO for batch registration.
@@ -154,25 +142,31 @@ pub struct ListEntitiesQuery {
     /// Filter by schema type: true for types, false for instances.
     #[serde(default)]
     pub is_schema: Option<bool>,
-    /// Filter by vendor.
+    /// Filter by vendor. Applied to segments per `segment_scope`.
     #[serde(default)]
     pub vendor: Option<String>,
-    /// Filter by package.
+    /// Filter by package. Applied to segments per `segment_scope`.
     #[serde(default)]
     pub package: Option<String>,
-    /// Filter by namespace.
+    /// Filter by namespace. Applied to segments per `segment_scope`.
     #[serde(default)]
     pub namespace: Option<String>,
-    /// Segment match scope: "primary" or "any" (default).
+    /// Controls which chain segments the vendor / package / namespace filters
+    /// match against. Either `"primary"` (first segment only) or `"any"`
+    /// (any segment in the chain). Defaults to `"any"` when omitted.
     #[serde(default)]
     pub segment_scope: Option<String>,
 }
 
 impl ListEntitiesQuery {
-    /// Converts this DTO to the SDK `ListQuery`.
+    /// Converts this DTO to the internal `ListQuery`.
+    ///
+    /// An unknown `segment_scope` value silently falls back to the default
+    /// (`Any`) — query params are best-effort. Tightening this to a 400
+    /// would change the wire contract.
     #[must_use]
-    pub fn to_list_query(&self) -> types_registry_sdk::ListQuery {
-        let mut query = types_registry_sdk::ListQuery::default();
+    pub fn to_list_query(&self) -> ListQuery {
+        let mut query = ListQuery::default();
 
         if let Some(ref pattern) = self.pattern {
             query = query.with_pattern(pattern);
@@ -195,11 +189,11 @@ impl ListEntitiesQuery {
         }
 
         if let Some(ref scope) = self.segment_scope {
-            match scope.as_str() {
-                "primary" => query = query.with_segment_scope(SegmentMatchScope::Primary),
-                "any" => query = query.with_segment_scope(SegmentMatchScope::Any),
-                _ => {}
-            }
+            let parsed = match scope.as_str() {
+                "primary" => SegmentMatchScope::Primary,
+                _ => SegmentMatchScope::Any,
+            };
+            query = query.with_segment_scope(parsed);
         }
 
         query
@@ -220,7 +214,6 @@ pub struct ListEntitiesResponse {
 mod tests {
     use super::*;
     use gts::GtsIdSegment;
-    use types_registry_sdk::TypesRegistryError;
 
     #[test]
     fn test_gts_entity_dto_from_entity() {
@@ -359,17 +352,12 @@ mod tests {
             #[allow(de0901_gts_string_pattern)]
             pattern: Some("gts.acme.*".to_owned()),
             is_schema: Some(true),
-            vendor: Some("acme".to_owned()),
-            package: None,
-            namespace: None,
-            segment_scope: Some("primary".to_owned()),
+            ..ListEntitiesQuery::default()
         };
 
         let query = dto.to_list_query();
         assert_eq!(query.pattern, Some("gts.acme.*".to_owned()));
         assert_eq!(query.is_type, Some(true));
-        assert_eq!(query.vendor, Some("acme".to_owned()));
-        assert_eq!(query.segment_scope, SegmentMatchScope::Primary);
     }
 
     #[test]
@@ -377,32 +365,38 @@ mod tests {
         let dto = ListEntitiesQuery {
             pattern: None,
             is_schema: Some(false),
-            vendor: None,
-            package: Some("core".to_owned()),
-            namespace: Some("events".to_owned()),
-            segment_scope: Some("any".to_owned()),
+            ..ListEntitiesQuery::default()
         };
 
         let query = dto.to_list_query();
         assert_eq!(query.is_type, Some(false));
-        assert_eq!(query.package, Some("core".to_owned()));
-        assert_eq!(query.namespace, Some("events".to_owned()));
-        assert_eq!(query.segment_scope, SegmentMatchScope::Any);
     }
 
     #[test]
-    fn test_list_entities_query_invalid_segment_scope() {
+    fn test_list_entities_query_segment_filters() {
         let dto = ListEntitiesQuery {
-            pattern: None,
-            is_schema: None,
-            vendor: None,
-            package: None,
-            namespace: None,
-            segment_scope: Some("invalid".to_owned()),
+            vendor: Some("acme".to_owned()),
+            package: Some("core".to_owned()),
+            namespace: Some("events".to_owned()),
+            segment_scope: Some("primary".to_owned()),
+            ..ListEntitiesQuery::default()
         };
 
         let query = dto.to_list_query();
-        assert_eq!(query.is_type, None);
+        assert_eq!(query.vendor, Some("acme".to_owned()));
+        assert_eq!(query.package, Some("core".to_owned()));
+        assert_eq!(query.namespace, Some("events".to_owned()));
+        assert_eq!(query.segment_scope, SegmentMatchScope::Primary);
+    }
+
+    #[test]
+    fn test_list_entities_query_segment_scope_unknown_falls_back_to_any() {
+        let dto = ListEntitiesQuery {
+            segment_scope: Some("garbage".to_owned()),
+            ..ListEntitiesQuery::default()
+        };
+
+        let query = dto.to_list_query();
         assert_eq!(query.segment_scope, SegmentMatchScope::Any);
     }
 
@@ -412,32 +406,6 @@ mod tests {
         let query = dto.to_list_query();
         assert_eq!(query.pattern, None);
         assert_eq!(query.is_type, None);
-        assert_eq!(query.vendor, None);
-    }
-
-    #[test]
-    fn test_register_result_dto_ok() {
-        let entity = GtsEntity::new(
-            Uuid::nil(),
-            "gts.test.pkg.ns.type.v1~",
-            vec![],
-            true, // is_schema
-            serde_json::json!({}),
-            None,
-        );
-        let result = RegisterResult::Ok(entity);
-        let dto: RegisterResultDto = result.into();
-        assert!(matches!(dto, RegisterResultDto::Ok { .. }));
-    }
-
-    #[test]
-    fn test_register_result_dto_err() {
-        let result: RegisterResult = RegisterResult::Err {
-            gts_id: Some("gts.x.core.events.test.v1~".to_owned()),
-            error: TypesRegistryError::validation_failed("test error"),
-        };
-        let dto: RegisterResultDto = result.into();
-        assert!(matches!(dto, RegisterResultDto::Error { .. }));
     }
 
     #[test]

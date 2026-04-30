@@ -35,3 +35,6 @@ thiserror = { workspace = true }
 modkit = { workspace = true }
 modkit-security = { workspace = true }
 modkit-macros = { workspace = true }
+
+[dev-dependencies]
+types-registry-sdk = { workspace = true, features = ["test-util"] }

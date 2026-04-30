@@ -43,6 +43,13 @@ impl std::fmt::Display for ValidationError {
 }
 
 /// Domain-level errors for the Types Registry module.
+///
+/// This enum is intentionally **kind-agnostic** — the storage layer doesn't
+/// know whether a string identifies a type-schema or an instance, it just
+/// stores and retrieves entities by their GTS ID. The kind context is added
+/// at the SDK boundary by the local client, which knows what kind the caller
+/// asked for and converts via [`Self::into_sdk_for_type_schema`] /
+/// [`Self::into_sdk_for_instance`].
 #[domain_model]
 #[derive(Error, Debug)]
 pub enum DomainError {
@@ -50,13 +57,22 @@ pub enum DomainError {
     #[error("Invalid GTS ID: {0}")]
     InvalidGtsId(String),
 
-    /// The requested entity was not found.
-    #[error("Entity not found: {0}")]
-    NotFound(String),
+    /// The requested entity was not found. `kind` records which lookup
+    /// surface the caller used (GTS id vs. UUID v5) so the REST layer
+    /// renders an accurate "No entity with X: …" message and SDK
+    /// conversions stay symmetric.
+    #[error("Entity not found ({kind}): {target}")]
+    NotFound { kind: LookupKind, target: String },
 
     /// An entity with the same GTS ID already exists.
     #[error("Entity already exists: {0}")]
     AlreadyExists(String),
+
+    /// The list/query parameters are syntactically invalid (e.g. an
+    /// out-of-spec wildcard pattern). Distinct from `InvalidGtsId`, which
+    /// covers id-shaped inputs.
+    #[error("Invalid query: {0}")]
+    InvalidQuery(String),
 
     /// Validation of the entity content failed.
     #[error("Validation failed: {0}")]
@@ -75,6 +91,39 @@ pub enum DomainError {
     Internal(#[from] anyhow::Error),
 }
 
+/// Indicates which kind of entity the caller was looking up, so kind-agnostic
+/// `DomainError`s can be lifted into kind-specific [`TypesRegistryError`]
+/// variants at the SDK boundary.
+#[domain_model]
+#[derive(Debug, Clone, Copy)]
+pub enum SdkErrorKind {
+    /// The caller asked for a type-schema.
+    TypeSchema,
+    /// The caller asked for an instance.
+    Instance,
+}
+
+/// Identifies which surface a `NotFound` lookup used. Carried inside
+/// [`DomainError::NotFound`] so renderers (REST, logs) can produce
+/// accurate "No entity with X" messages.
+#[domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookupKind {
+    /// Lookup by canonical GTS id string.
+    GtsId,
+    /// Lookup by deterministic UUID v5.
+    Uuid,
+}
+
+impl std::fmt::Display for LookupKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GtsId => f.write_str("GTS ID"),
+            Self::Uuid => f.write_str("UUID"),
+        }
+    }
+}
+
 impl DomainError {
     /// Creates an `InvalidGtsId` error.
     #[must_use]
@@ -82,16 +131,34 @@ impl DomainError {
         Self::InvalidGtsId(message.into())
     }
 
-    /// Creates a `NotFound` error.
+    /// Creates a `NotFound` error for a GTS-id-keyed lookup miss.
     #[must_use]
-    pub fn not_found(gts_id: impl Into<String>) -> Self {
-        Self::NotFound(gts_id.into())
+    pub fn not_found_by_id(gts_id: impl Into<String>) -> Self {
+        Self::NotFound {
+            kind: LookupKind::GtsId,
+            target: gts_id.into(),
+        }
+    }
+
+    /// Creates a `NotFound` error for a UUID-keyed lookup miss.
+    #[must_use]
+    pub fn not_found_by_uuid(uuid: uuid::Uuid) -> Self {
+        Self::NotFound {
+            kind: LookupKind::Uuid,
+            target: uuid.to_string(),
+        }
     }
 
     /// Creates an `AlreadyExists` error.
     #[must_use]
     pub fn already_exists(gts_id: impl Into<String>) -> Self {
         Self::AlreadyExists(gts_id.into())
+    }
+
+    /// Creates an `InvalidQuery` error.
+    #[must_use]
+    pub fn invalid_query(message: impl Into<String>) -> Self {
+        Self::InvalidQuery(message.into())
     }
 
     /// Creates a `ValidationFailed` error.
@@ -108,17 +175,49 @@ impl DomainError {
             _ => None,
         }
     }
-}
 
-impl From<DomainError> for TypesRegistryError {
-    fn from(e: DomainError) -> Self {
-        match e {
-            DomainError::InvalidGtsId(msg) => TypesRegistryError::invalid_gts_id(msg),
-            DomainError::NotFound(id) => TypesRegistryError::not_found(id),
-            DomainError::AlreadyExists(id) => TypesRegistryError::already_exists(id),
-            DomainError::ValidationFailed(msg) => TypesRegistryError::validation_failed(msg),
-            DomainError::NotInReadyMode => TypesRegistryError::not_in_ready_mode(),
-            DomainError::ReadyCommitFailed(errors) => {
+    /// Converts to [`TypesRegistryError`] under the assumption that the caller
+    /// was looking up a **type-schema**.
+    ///
+    /// `NotFound` becomes `GtsTypeSchemaNotFound`; `InvalidGtsId` becomes
+    /// `InvalidGtsTypeId`; the rest map straight.
+    #[must_use]
+    pub fn into_sdk_for_type_schema(self) -> TypesRegistryError {
+        self.into_sdk(SdkErrorKind::TypeSchema)
+    }
+
+    /// Converts to [`TypesRegistryError`] under the assumption that the caller
+    /// was looking up an **instance**.
+    ///
+    /// `NotFound` becomes `GtsInstanceNotFound`; `InvalidGtsId` becomes
+    /// `InvalidGtsInstanceId`; the rest map straight.
+    #[must_use]
+    pub fn into_sdk_for_instance(self) -> TypesRegistryError {
+        self.into_sdk(SdkErrorKind::Instance)
+    }
+
+    fn into_sdk(self, kind: SdkErrorKind) -> TypesRegistryError {
+        match (self, kind) {
+            (Self::InvalidGtsId(msg), SdkErrorKind::TypeSchema) => {
+                TypesRegistryError::invalid_gts_type_id(msg)
+            }
+            (Self::InvalidGtsId(msg), SdkErrorKind::Instance) => {
+                TypesRegistryError::invalid_gts_instance_id(msg)
+            }
+            (Self::NotFound { target, .. }, SdkErrorKind::TypeSchema) => {
+                TypesRegistryError::gts_type_schema_not_found(target)
+            }
+            (Self::NotFound { target, .. }, SdkErrorKind::Instance) => {
+                TypesRegistryError::gts_instance_not_found(target)
+            }
+            (Self::AlreadyExists(id), _) => TypesRegistryError::already_exists(id),
+            (Self::InvalidQuery(msg), _) => TypesRegistryError::invalid_query(msg),
+            (Self::ValidationFailed(msg), _) => TypesRegistryError::validation_failed(msg),
+            (Self::NotInReadyMode, _) => TypesRegistryError::service_unavailable(
+                "types registry is still initializing",
+                std::time::Duration::from_secs(1),
+            ),
+            (Self::ReadyCommitFailed(errors), _) => {
                 let error_strings: Vec<String> = errors
                     .iter()
                     .map(std::string::ToString::to_string)
@@ -129,7 +228,7 @@ impl From<DomainError> for TypesRegistryError {
                     error_strings.join("; ")
                 ))
             }
-            DomainError::Internal(e) => TypesRegistryError::internal(e.to_string()),
+            (Self::Internal(e), _) => TypesRegistryError::internal(e.to_string()),
         }
     }
 }
@@ -143,8 +242,23 @@ mod tests {
         let err = DomainError::invalid_gts_id("missing vendor");
         assert!(matches!(err, DomainError::InvalidGtsId(_)));
 
-        let err = DomainError::not_found("gts.acme.core.events.test.v1~");
-        assert!(matches!(err, DomainError::NotFound(_)));
+        let err = DomainError::not_found_by_id("gts.acme.core.events.test.v1~");
+        assert!(matches!(
+            err,
+            DomainError::NotFound {
+                kind: LookupKind::GtsId,
+                ..
+            }
+        ));
+
+        let err = DomainError::not_found_by_uuid(uuid::Uuid::nil());
+        assert!(matches!(
+            err,
+            DomainError::NotFound {
+                kind: LookupKind::Uuid,
+                ..
+            }
+        ));
 
         let err = DomainError::already_exists("gts.acme.core.events.test.v1~");
         assert!(matches!(err, DomainError::AlreadyExists(_)));
@@ -154,29 +268,44 @@ mod tests {
     }
 
     #[test]
-    fn test_domain_to_sdk_error_conversion() {
-        let domain_err = DomainError::not_found("gts.x.core.events.test.v1~");
-        let sdk_err: TypesRegistryError = domain_err.into();
-        assert!(sdk_err.is_not_found());
+    fn test_domain_to_sdk_error_conversion_for_type_schema() {
+        let sdk_err =
+            DomainError::not_found_by_id("gts.x.core.events.test.v1~").into_sdk_for_type_schema();
+        assert!(sdk_err.is_gts_type_schema_not_found());
 
-        let domain_err = DomainError::already_exists("gts.x.core.events.test.v1~");
-        let sdk_err: TypesRegistryError = domain_err.into();
+        // UUID-keyed not-found also surfaces as `GtsTypeSchemaNotFound` —
+        // the SDK error doesn't model the lookup kind, only the kind of
+        // the entity the caller was after. The lookup-kind distinction
+        // matters only for REST rendering.
+        let sdk_err = DomainError::not_found_by_uuid(uuid::Uuid::nil()).into_sdk_for_type_schema();
+        assert!(sdk_err.is_gts_type_schema_not_found());
+
+        let sdk_err = DomainError::invalid_gts_id("bad format").into_sdk_for_type_schema();
+        assert!(sdk_err.is_invalid_gts_type_id());
+
+        let sdk_err =
+            DomainError::already_exists("gts.x.core.events.test.v1~").into_sdk_for_type_schema();
         assert!(sdk_err.is_already_exists());
 
-        let domain_err = DomainError::validation_failed("bad schema");
-        let sdk_err: TypesRegistryError = domain_err.into();
+        let sdk_err = DomainError::validation_failed("bad schema").into_sdk_for_type_schema();
         assert!(sdk_err.is_validation_failed());
+    }
 
-        let domain_err = DomainError::invalid_gts_id("bad format");
-        let sdk_err: TypesRegistryError = domain_err.into();
-        assert!(sdk_err.is_invalid_gts_id());
+    #[test]
+    fn test_domain_to_sdk_error_conversion_for_instance() {
+        let sdk_err =
+            DomainError::not_found_by_id("gts.x.core.events.test.v1~x.core.instances.u1.v1")
+                .into_sdk_for_instance();
+        assert!(sdk_err.is_gts_instance_not_found());
+
+        let sdk_err = DomainError::invalid_gts_id("no chain prefix").into_sdk_for_instance();
+        assert!(sdk_err.is_invalid_gts_instance_id());
     }
 
     #[test]
     fn test_domain_to_sdk_error_not_in_ready_mode() {
-        let domain_err = DomainError::NotInReadyMode;
-        let sdk_err: TypesRegistryError = domain_err.into();
-        assert!(matches!(sdk_err, TypesRegistryError::NotInReadyMode));
+        let sdk_err = DomainError::NotInReadyMode.into_sdk_for_type_schema();
+        assert!(sdk_err.is_service_unavailable());
     }
 
     #[test]
@@ -185,16 +314,23 @@ mod tests {
             ValidationError::new("gts.test1~", "error1"),
             ValidationError::new("gts.test2~", "error2"),
         ];
-        let domain_err = DomainError::ReadyCommitFailed(errors);
-        let sdk_err: TypesRegistryError = domain_err.into();
+        let sdk_err = DomainError::ReadyCommitFailed(errors).into_sdk_for_type_schema();
         assert!(sdk_err.is_validation_failed());
     }
 
     #[test]
     fn test_domain_to_sdk_error_internal() {
-        let domain_err = DomainError::Internal(anyhow::anyhow!("test error"));
-        let sdk_err: TypesRegistryError = domain_err.into();
+        let sdk_err =
+            DomainError::Internal(anyhow::anyhow!("test error")).into_sdk_for_type_schema();
         assert!(matches!(sdk_err, TypesRegistryError::Internal(_)));
+    }
+
+    #[test]
+    fn test_domain_to_sdk_error_invalid_query() {
+        let sdk_err = DomainError::invalid_query("bad pattern").into_sdk_for_type_schema();
+        assert!(sdk_err.is_invalid_query());
+        let sdk_err = DomainError::invalid_query("bad pattern").into_sdk_for_instance();
+        assert!(sdk_err.is_invalid_query());
     }
 
     #[test]
@@ -202,10 +338,16 @@ mod tests {
         let err = DomainError::InvalidGtsId("bad format".to_owned());
         assert_eq!(err.to_string(), "Invalid GTS ID: bad format");
 
-        let err = DomainError::NotFound("gts.x.core.events.test.v1~".to_owned());
+        let err = DomainError::not_found_by_id("gts.x.core.events.test.v1~");
         assert_eq!(
             err.to_string(),
-            "Entity not found: gts.x.core.events.test.v1~"
+            "Entity not found (GTS ID): gts.x.core.events.test.v1~"
+        );
+
+        let err = DomainError::not_found_by_uuid(uuid::Uuid::nil());
+        assert_eq!(
+            err.to_string(),
+            "Entity not found (UUID): 00000000-0000-0000-0000-000000000000"
         );
 
         let err = DomainError::AlreadyExists("gts.x.core.events.test.v1~".to_owned());

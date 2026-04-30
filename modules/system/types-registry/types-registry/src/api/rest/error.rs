@@ -18,11 +18,11 @@ impl From<DomainError> for Problem {
                 "Invalid GTS ID",
                 msg.clone(),
             ),
-            DomainError::NotFound(id) => (
+            DomainError::NotFound { kind, target } => (
                 StatusCode::NOT_FOUND,
                 "TYPES_REGISTRY_NOT_FOUND",
                 "Entity not found",
-                format!("No entity with GTS ID: {id}"),
+                format!("No entity with {kind}: {target}"),
             ),
             DomainError::AlreadyExists(id) => (
                 StatusCode::CONFLICT,
@@ -34,6 +34,12 @@ impl From<DomainError> for Problem {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "TYPES_REGISTRY_VALIDATION_FAILED",
                 "Validation failed",
+                msg.clone(),
+            ),
+            DomainError::InvalidQuery(msg) => (
+                StatusCode::BAD_REQUEST,
+                "TYPES_REGISTRY_INVALID_QUERY",
+                "Invalid query",
                 msg.clone(),
             ),
             DomainError::NotInReadyMode => (
@@ -86,10 +92,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_domain_error_to_problem_not_found() {
-        let err = DomainError::not_found("gts.x.core.events.test.v1~");
+    fn test_domain_error_to_problem_not_found_by_id() {
+        let err = DomainError::not_found_by_id("gts.x.core.events.test.v1~");
         let problem: Problem = err.into();
         assert_eq!(problem.status, StatusCode::NOT_FOUND);
+        assert!(
+            problem
+                .detail
+                .contains("GTS ID: gts.x.core.events.test.v1~"),
+            "expected GTS-id-keyed detail, got {:?}",
+            problem.detail,
+        );
+    }
+
+    #[test]
+    fn test_domain_error_to_problem_not_found_by_uuid() {
+        let err = DomainError::not_found_by_uuid(uuid::Uuid::nil());
+        let problem: Problem = err.into();
+        assert_eq!(problem.status, StatusCode::NOT_FOUND);
+        assert!(
+            problem
+                .detail
+                .contains("UUID: 00000000-0000-0000-0000-000000000000"),
+            "expected UUID-keyed detail, got {:?}",
+            problem.detail,
+        );
     }
 
     #[test]
@@ -137,5 +164,12 @@ mod tests {
         let err = DomainError::Internal(anyhow::anyhow!("test error"));
         let problem: Problem = err.into();
         assert_eq!(problem.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_domain_error_to_problem_invalid_query() {
+        let err = DomainError::invalid_query("bad pattern");
+        let problem: Problem = err.into();
+        assert_eq!(problem.status, StatusCode::BAD_REQUEST);
     }
 }

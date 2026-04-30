@@ -37,11 +37,13 @@ axum = { workspace = true, features = ["macros"] }
 uuid = { workspace = true, features = ["v5"] }
 thiserror = { workspace = true }
 parking_lot = { workspace = true }
+lru = "0.16"
 
 # Local dependencies
 modkit = { workspace = true }
 modkit-macros = { workspace = true }
 modkit-security = { workspace = true }
+modkit-utils = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

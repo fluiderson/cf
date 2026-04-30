@@ -72,6 +72,7 @@ rustls = { workspace = true, optional = true }
 
 [dev-dependencies]
 cf-oagw = { path = ".", features = ["test-utils"] }
+types-registry-sdk = { workspace = true, features = ["test-util"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "net"] }
 tower = { workspace = true, features = ["util"] }
 hyper = { workspace = true }

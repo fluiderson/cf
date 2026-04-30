@@ -3,6 +3,7 @@
 //! Contains business logic, error types, and repository traits.
 
 pub mod error;
+pub mod model;
 pub mod repo;
 pub mod service;
 // === LOCAL CLIENT ===

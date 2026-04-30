@@ -4,7 +4,7 @@ use mini_chat_sdk::{MiniChatAuditPluginClientV1, MiniChatAuditPluginSpecV1};
 use modkit::client_hub::{ClientHub, ClientScope};
 use modkit::plugins::{ChoosePluginError, GtsPluginSelector, choose_plugin_instance};
 use tracing::warn;
-use types_registry_sdk::{ListQuery, TypesRegistryClient};
+use types_registry_sdk::{InstanceQuery, TypesRegistryClient};
 
 /// Resolves and dispatches to the registered audit plugin instance.
 ///
@@ -112,16 +112,12 @@ impl AuditGateway {
         let registry = self.hub.get::<dyn TypesRegistryClient>()?;
         let plugin_type_id = MiniChatAuditPluginSpecV1::gts_schema_id().clone();
         let instances = registry
-            .list(
-                ListQuery::new()
-                    .with_pattern(format!("{plugin_type_id}*"))
-                    .with_is_type(false),
-            )
+            .list_instances(InstanceQuery::new().with_pattern(format!("{plugin_type_id}*")))
             .await?;
 
         match choose_plugin_instance::<MiniChatAuditPluginSpecV1>(
             &self.vendor,
-            instances.iter().map(|e| (e.gts_id.as_str(), &e.content)),
+            instances.iter().map(|e| (e.id.as_ref(), &e.object)),
         ) {
             Ok(gts_id) => Ok(gts_id),
             // No matching instances — audit is optional; cache a sentinel so we

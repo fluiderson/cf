@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use common::create_service;
 use serde_json::json;
 use types_registry::api::rest::dto::RegisterEntitiesRequest;
-use types_registry_sdk::ListQuery;
+use types_registry::domain::model::ListQuery;
 
 // =============================================================================
 // Anonymous Entity Rejection Tests
