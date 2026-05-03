@@ -24,7 +24,6 @@ debug = "line-tables-only"
 [workspace]
 members = [
     "apps/cf-server",
-    "apps/gts-docs-validator",
     "tools/xtask",
     "libs/modkit",
     "libs/modkit-macros",

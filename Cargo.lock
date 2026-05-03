@@ -4004,14 +4004,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gts-docs-validator"
-version = "0.6.1"
-dependencies = [
- "clap",
- "gts-validator",
-]
-
-[[package]]
 name = "gts-id"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4031,23 +4023,6 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "gts-validator"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2033098e2a3b6c0f71c6c10a61fb2a4a5c6a93c51bd1309b179e5344e756cd62"
-dependencies = [
- "anyhow",
- "clap",
- "glob",
- "gts",
- "regex",
- "serde",
- "serde-saphyr 0.0.24",
- "serde_json",
- "walkdir",
 ]
 
 [[package]]
