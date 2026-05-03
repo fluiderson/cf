@@ -123,6 +123,8 @@ This produces one recognizable API dialect across modules:
 - Shared pagination/filter/order conventions
 - OData-style filtering for collection resources where applicable
 - Consistent auth, rate-limit, timeout, and observability behavior at the gateway
+- [ ] Rate limiting — implemented in OAGW domain layer; API Gateway integration pending.
+- [~] License posture declaration — OperationBuilder declaration and base-license gate implemented; per-feature entitlement validation against license resolver pending.
 
 **Why.** Consumers, SDK authors, tests, docs, and gateway behavior all stay predictable. A module does not invent its own filtering language, pagination rules, or error envelope, so cross-module tooling and client generation remain feasible.
 
@@ -367,7 +369,9 @@ Security foundations:
 
 ### 12.1. REST and OpenAPI
 
-- [x] API Gateway builds a unified HTTP surface with health endpoints, middleware, auth, request IDs, tracing, rate limiting, timeouts, and docs endpoints.
+- [x] API Gateway builds a unified HTTP surface with health endpoints, middleware, auth, request IDs, tracing, timeouts, and docs endpoints.
+- [ ] Rate limiting — implemented in OAGW domain layer; API Gateway integration pending.
+- [~] License posture declaration — OperationBuilder declaration and base-license gate implemented; per-feature entitlement validation against license resolver pending.
 - [x] `OpenApiRegistry` and `OperationBuilder` are implemented in ModKit.
 - [x] `/openapi.json` and `/docs` are served by the API gateway.
 - [x] OData extensions are implemented in `OperationBuilder` for standardized `$filter`, `$select`, and `$orderby` support.
@@ -399,7 +403,7 @@ The canonical error model stabilizes failure semantics, improves machine-readabi
 - [x] OpenTelemetry tracing initialization exists in `libs/modkit/src/telemetry/`.
 - [x] API Gateway implements request IDs, tracing, timeout layers, body limits, and structured access logging.
 - [x] API Gateway exposes `/health` and `/healthz`.
-- [x] Route-level policies, auth middleware, MIME validation, and rate limiting are implemented in the gateway layer.
+- [ ] Rate limiting — implemented in OAGW domain layer; API Gateway integration pending.
 - [x] The repo contains CI workflows and test infrastructure aligned with operational quality.
 
 ## 14. Recommended reading order
