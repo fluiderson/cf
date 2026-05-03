@@ -394,7 +394,7 @@ This is the non-HTTP counterpart to OpenAPI generation. OpenAPI describes REST e
 
 The canonical error model stabilizes failure semantics, improves machine-readability, reduces ad-hoc error drift, and aligns REST, future gRPC, and internal domain errors. It also connects failure semantics to GTS-backed type identity, so error categories become part of the platform contract surface rather than just human-readable messages.
 
-## 14. Observability and operations
+## 13. Observability and operations
 
 - [x] OpenTelemetry tracing initialization exists in `libs/modkit/src/telemetry/`.
 - [x] API Gateway implements request IDs, tracing, timeout layers, body limits, and structured access logging.
@@ -402,7 +402,7 @@ The canonical error model stabilizes failure semantics, improves machine-readabi
 - [x] Route-level policies, auth middleware, MIME validation, and rate limiting are implemented in the gateway layer.
 - [x] The repo contains CI workflows and test infrastructure aligned with operational quality.
 
-## 15. Recommended reading order
+## 14. Recommended reading order
 
 1. [docs/MODULES.md](MODULES.md)
 2. [docs/modkit_unified_system/README.md](modkit_unified_system/README.md)
