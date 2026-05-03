@@ -1364,6 +1364,7 @@ dependencies = [
 name = "cf-account-management"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "cf-account-management-sdk",
  "cf-authz-resolver-sdk",
@@ -1372,9 +1373,15 @@ dependencies = [
  "cf-modkit-db",
  "cf-modkit-db-macros",
  "cf-modkit-macros",
+ "cf-modkit-odata",
  "cf-modkit-security",
+ "cf-resource-group-sdk",
+ "cf-tenant-resolver-sdk",
+ "cf-types-registry-sdk",
  "fnv",
  "futures",
+ "gts",
+ "parking_lot",
  "proptest",
  "sea-orm",
  "sea-orm-migration",
@@ -1383,7 +1390,9 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tokio",
+ "tokio-util",
  "tracing",
+ "tracing-test",
  "uuid",
 ]
 
@@ -1391,7 +1400,13 @@ dependencies = [
 name = "cf-account-management-sdk"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "cf-modkit-canonical-errors",
+ "cf-tenant-resolver-sdk",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

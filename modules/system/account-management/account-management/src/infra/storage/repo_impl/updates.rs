@@ -14,8 +14,10 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, QueryFilter};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use account_management_sdk::TenantUpdate;
+
 use crate::domain::error::DomainError;
-use crate::domain::tenant::model::{TenantModel, TenantStatus, TenantUpdate};
+use crate::domain::tenant::model::{TenantModel, TenantStatus};
 use crate::infra::storage::entity::{tenant_closure, tenants};
 
 use super::TenantRepoImpl;
@@ -72,9 +74,18 @@ pub(super) async fn update_tenant_mutable(
                     .into());
                 }
 
+                // Lower the SDK status into the domain enum once and
+                // reuse the binding across the validation match, the
+                // change-detection check, and the `tenants.status` /
+                // `tenant_closure.descendant_status` writes. `TenantStatus: Copy`,
+                // so destructuring the `Option` repeatedly is free.
+                let maybe_new_status: Option<TenantStatus> =
+                    patch_owned.status.map(TenantStatus::from);
+
                 // Patch-side status validation: PATCH may only flip
-                // between `Active` and `Suspended`. A `Deleted` target
-                // would skip the `deleted_at` /
+                // between `Active` and `Suspended` (or admit a same-to-
+                // same no-op — see the change-detection step below).
+                // A `Deleted` target would skip the `deleted_at` /
                 // `deletion_scheduled_at` stamps that
                 // `schedule_deletion` is responsible for, leaving the
                 // public Tenant schema with `status=deleted,
@@ -83,7 +94,7 @@ pub(super) async fn update_tenant_mutable(
                 // back to invisible while its `tenant_closure` rows
                 // remain present — corrupt state per the
                 // provisioning-exclusion invariant.
-                if let Some(new_status) = patch_owned.status {
+                if let Some(new_status) = maybe_new_status {
                     match new_status {
                         TenantStatus::Active | TenantStatus::Suspended => {}
                         TenantStatus::Deleted => {
@@ -104,31 +115,32 @@ pub(super) async fn update_tenant_mutable(
                             .into());
                         }
                     }
-                    // No-op rejection — defense-in-depth mirror of the
-                    // domain `validate_status_transition` strict contract
-                    // (only `Active ↔ Suspended` cross-flip is permitted).
-                    // Without this, a PATCH that resends the current
-                    // status would still fire the `tenant_closure.descendant_status`
-                    // rewrite below — a wasted write with no observable
-                    // user-visible change.
-                    if row.status == new_status.as_smallint() {
-                        return Err(DomainError::Conflict {
-                            detail: format!(
-                                "tenant {tenant_id}: PATCH status no-op \
-                                 (current and target are both {new_status:?})"
-                            ),
-                        }
-                        .into());
-                    }
+                }
+
+                // Idempotent no-op detection (HTTP PATCH semantics,
+                // option A — true idempotency). For each patchable
+                // field, fold "patch is Some AND value differs from
+                // current row" into a single `Option` whose `Some`
+                // means "this column must be written". If both
+                // collapse to `None`, skip the entire UPDATE: no
+                // `updated_at` bump, no `tenant_closure` rewrite.
+                // Caller observes identical state on retry.
+                let name_to_write = patch_owned
+                    .name
+                    .as_ref()
+                    .filter(|n| n.as_str() != row.name.as_str());
+                let status_to_write = maybe_new_status.filter(|s| s.as_smallint() != row.status);
+                if name_to_write.is_none() && status_to_write.is_none() {
+                    return entity_to_model(row).map_err(TxError::Domain);
                 }
 
                 let now = OffsetDateTime::now_utc();
                 let mut upd = tenants::Entity::update_many()
                     .col_expr(tenants::Column::UpdatedAt, Expr::value(now));
-                if let Some(ref new_name) = patch_owned.name {
+                if let Some(new_name) = name_to_write {
                     upd = upd.col_expr(tenants::Column::Name, Expr::value(new_name.clone()));
                 }
-                if let Some(new_status) = patch_owned.status {
+                if let Some(new_status) = status_to_write {
                     upd = upd.col_expr(
                         tenants::Column::Status,
                         Expr::value(new_status.as_smallint()),
@@ -141,22 +153,22 @@ pub(super) async fn update_tenant_mutable(
                     .await
                     .map_err(map_scope_to_tx)?;
 
-                // Rewrite tenant_closure.descendant_status atomically on status change.
-                // Both `tenant_closure` and `tenants` are declared
-                // `no_tenant, no_resource, no_owner, no_type` (see
-                // entity docs). On a `no_*` entity `scope_with(scope)`
-                // compiles to a no-op when the caller passes
-                // `allow_all` and to `WHERE false` on any narrowed
-                // scope — there is no in-between. The trait contract
-                // requires callers to pass `allow_all` until
-                // `InTenantSubtree` lands; we explicitly pass
-                // `allow_all` here so this closure write is
-                // unaffected by any future caller mistake. The
-                // `tenants` UPDATE one statement up forwards the
-                // caller's scope verbatim — that path relies on the
-                // same trait contract. Authorization is enforced
-                // upstream at the PDP gate in the service layer.
-                if let Some(new_status) = patch_owned.status {
+                // Rewrite tenant_closure.descendant_status atomically
+                // on actual status change. Both `tenant_closure` and
+                // `tenants` are declared `no_tenant, no_resource,
+                // no_owner, no_type` (see entity docs). On a `no_*`
+                // entity `scope_with(scope)` compiles to a no-op when
+                // the caller passes `allow_all` and to `WHERE false`
+                // on any narrowed scope — there is no in-between. The
+                // trait contract requires callers to pass `allow_all`
+                // until `InTenantSubtree` lands; we explicitly pass
+                // `allow_all` here so this closure write is unaffected
+                // by any future caller mistake. The `tenants` UPDATE
+                // one statement up forwards the caller's scope
+                // verbatim — that path relies on the same trait
+                // contract. Authorization is enforced upstream at the
+                // PDP gate in the service layer.
+                if let Some(new_status) = status_to_write {
                     // @cpt-begin:cpt-cf-account-management-algo-tenant-hierarchy-management-closure-maintenance:p1:inst-algo-closmnt-repo-status-update
                     let closure_rows_affected = tenant_closure::Entity::update_many()
                         .col_expr(
@@ -275,10 +287,9 @@ pub(super) async fn load_ancestor_chain_through_parent(
             // beyond the caller's scope (a tenant admin authorized to
             // their own subtree still needs the chain up to the root
             // for closure-row construction). Authorization for the
-            // operation as a whole is enforced upstream in the
-            // service layer; this read is the structural truth that
-            // gate consults. `allow_all` matches the pattern used by
-            // `is_descendant`.
+            // operation as a whole is enforced upstream by the PDP at
+            // the service layer; this read is the structural truth
+            // that gate consults, hence `allow_all`.
             let parent = tenants::Entity::find()
                 .secure()
                 .scope_with(&AccessScope::allow_all())
@@ -439,6 +450,26 @@ pub(super) async fn schedule_deletion(
                         ),
                     }
                     .into());
+                }
+
+                // Re-check inside the SERIALIZABLE write transaction.
+                // The service performs the same guard before entering
+                // the repo, but that pre-check can race a concurrent
+                // create-child insert; this predicate read creates the
+                // necessary serialization edge against that insert.
+                let child_count = tenants::Entity::find()
+                    .secure()
+                    .scope_with(&AccessScope::allow_all())
+                    .filter(
+                        Condition::all()
+                            .add(tenants::Column::ParentId.eq(id))
+                            .add(tenants::Column::Status.ne(TenantStatus::Deleted.as_smallint())),
+                    )
+                    .count(tx)
+                    .await
+                    .map_err(map_scope_to_tx)?;
+                if child_count > 0 {
+                    return Err(DomainError::TenantHasChildren.into());
                 }
 
                 let mut upd = tenants::Entity::update_many()
