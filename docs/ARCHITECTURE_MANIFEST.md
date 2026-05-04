@@ -295,6 +295,15 @@ What ModKit provides:
 - [x] **Transport flexibility**
   - In-process, REST, and gRPC all fit the same modular model.
 
+- [x] **SSE streaming infrastructure**
+  - ModKit provides `SseBroadcaster<T>` for typed server-sent event fan-out over tokio broadcast channels, and `OperationBuilder::sse_json<T>()` for first-class SSE route registration with automatic OpenAPI schema generation. Modules use this for real-time streaming (e.g. AI token delivery) without implementing low-level event-stream plumbing.
+
+- [x] **Transactional outbox**
+  - `modkit-db` includes a multi-stage transactional outbox pipeline (enqueue → sequence → process) with two processing strategies: transactional (exactly-once, in-DB) and leased (at-least-once, idempotent). The outbox supports partition-based parallelism, dead-letter lifecycle, and multi-database backends (PostgreSQL, MySQL, SQLite). Modules enqueue domain events inside the caller's transaction and the outbox pipeline delivers them asynchronously with reliable ordering.
+
+- [x] **Typed module configuration**
+  - `ModuleCtx` provides `config::<T>()` and `config_expanded::<T>()` for typed, per-module configuration loaded from YAML sections. Modules that can operate with defaults use `module_config_or_default`; modules that require configuration use `module_config_required`. The `#[derive(ExpandVars)]` macro expands `${VAR}` placeholders from environment variables in marked fields, keeping secrets out of config files.
+
 See more: [docs/modkit_unified_system/README.md](modkit_unified_system/README.md)
 
 ### 7.2 Request Lifecycle
@@ -496,3 +505,9 @@ The canonical error model stabilizes failure semantics, improves machine-readabi
 - [x] API Gateway exposes `/health` and `/healthz`.
 - [ ] Rate limiting — implemented in OAGW domain layer; API Gateway integration pending.
 - [x] The repo contains CI workflows and test infrastructure aligned with operational quality.
+
+## 13. Testing architecture
+
+CyberFabric defines a dual-layer testing strategy with an explicit zero-overlap rule between tiers. **Unit and integration tests** run in-process against SQLite `:memory:` with mocked AuthZ, covering domain invariants, validation, error chains, DTO conversions, and seeding logic — no HTTP, no real database. **End-to-end tests** (pytest against a running `cf-server` with real Database) verify only integration seams that unit tests cannot see: JSON wire format, real AuthZ wiring, DB-specific SQL, and cross-module SDK boundaries. Each test must answer three gating questions — whether the bug requires real HTTP or a real DB dialect, and whether removing the test reduces confidence — before it is placed in either tier.
+
+See more: [docs/modkit_unified_system/12_unit_testing.md](modkit_unified_system/12_unit_testing.md) and [docs/modkit_unified_system/13_e2e_testing.md](modkit_unified_system/13_e2e_testing.md)
