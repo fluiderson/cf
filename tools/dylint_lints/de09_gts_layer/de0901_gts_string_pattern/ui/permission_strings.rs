@@ -17,7 +17,7 @@ fn main() {
 
     // Test 4: Permission string with GTS wildcard pattern
     // Should trigger DE0901 - invalid GTS format
-    let _perm3 = "resource-id:gts.cf..core.events.event.v1~a.b.c~:action:scope";
+    let _perm3 = "resource-id:gts.cf.core.events.event.v1~a.b.c~:action:scope";
 
     // Test 5: Invalid GTS instance segment
     // Should trigger DE0901 - invalid GTS
