@@ -379,7 +379,7 @@ async fn test_vendor_isolation_across_rg_types() {
     );
     assert!(
         !service
-            .list(&ListQuery::default().with_pattern("gts.w.*"))
+            .list(&ListQuery::default().with_pattern("gts.cf.core.rg.type.v1~w.*"))
             .unwrap()
             .is_empty()
     );
