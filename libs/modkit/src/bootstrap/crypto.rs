@@ -3,7 +3,9 @@ use std::sync::OnceLock;
 /// Error returned when the crypto provider cannot be installed.
 // `Clone` required by `OnceLock<Result<_>>` cache in `init_crypto_provider` —
 // the cached result is cloned on every call.
-#[derive(Debug, Clone, thiserror::Error)]
+// `PartialEq`/`Eq` used by tests asserting the cached result is stable.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum CryptoProviderError {
     /// Another crypto provider was already installed (FIPS mode).
     #[error("failed to install FIPS crypto provider - another provider is already installed")]
