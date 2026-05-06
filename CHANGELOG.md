@@ -9,6 +9,135 @@ release-plz updates this file in the Release PR.
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/cyberfabric/cyberfabric-core/releases/tag/cf-account-management-v0.1.0) - 2026-05-06
+
+### Added
+
+- *(account-management)* tenant service domain layer + AM module entry-point (by @diffora)
+- *(account-management)* SDK + storage-floor + planning docs (by @diffora)
+
+### Fixed
+
+- *(account-management)* retention-side parking + observability batch + SDK typing for PR #1830 review (by @diffora)
+- *(account-management)* claim/due predicate fences + IdP-required gates + saga step-3 compensation (by @diffora)
+- *(account-management)* address PR #1756 review findings (by @diffora)
+
+### Contributors
+
+* @diffora
+
+## [0.1.0](https://github.com/cyberfabric/cyberfabric-core/releases/tag/cf-account-management-sdk-v0.1.0) - 2026-05-06
+
+### Added
+
+- *(account-management)* tenant service domain layer + AM module entry-point (by @diffora)
+- *(account-management)* SDK + storage-floor + planning docs (by @diffora)
+
+### Fixed
+
+- *(account-management)* retention-side parking + observability batch + SDK typing for PR #1830 review (by @diffora)
+
+### Contributors
+
+* @diffora
+
+## [0.6.3](https://github.com/cyberfabric/cyberfabric-core/compare/types-sdk-v0.6.2...types-sdk-v0.6.3) - 2026-05-06
+
+### Other
+
+- release (by @github-actions[bot]) - #1827
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.1.2](https://github.com/cyberfabric/cyberfabric-core/compare/cf-tr-authz-plugin-v0.1.1...cf-tr-authz-plugin-v0.1.2) - 2026-05-06
+
+### Other
+
+- release (by @github-actions[bot]) - #1827
+- massive renaming of different artifacts from HyperSport -> CyberFabric to finalize project transition under CyberFabric (by @Artifizer) - #1805
+
+### Contributors
+
+* @github-actions[bot]
+* @Artifizer
+
+## [0.1.20](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-tr-plugin-v0.1.19...cf-static-tr-plugin-v0.1.20) - 2026-05-06
+
+### Other
+
+- release (by @github-actions[bot]) - #1827
+- massive renaming of different artifacts from HyperSport -> CyberFabric to finalize project transition under CyberFabric (by @Artifizer) - #1805
+
+### Contributors
+
+* @github-actions[bot]
+* @Artifizer
+
+## [0.1.17](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-credstore-plugin-v0.1.16...cf-static-credstore-plugin-v0.1.17) - 2026-05-06
+
+### Other
+
+- release (by @github-actions[bot]) - #1827
+- *(gts)* migrate vendor slug from `x` to `cf` (by @Artifizer)
+- massive renaming of different artifacts from HyperSport -> CyberFabric to finalize project transition under CyberFabric (by @Artifizer) - #1805
+
+### Contributors
+
+* @github-actions[bot]
+* @Artifizer
+
+## [0.1.19](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authz-plugin-v0.1.18...cf-static-authz-plugin-v0.1.19) - 2026-05-06
+
+### Other
+
+- release (by @github-actions[bot]) - #1827
+- *(gts)* migrate vendor slug from `x` to `cf` (by @Artifizer)
+- massive renaming of different artifacts from HyperSport -> CyberFabric to finalize project transition under CyberFabric (by @Artifizer) - #1805
+
+### Contributors
+
+* @github-actions[bot]
+* @Artifizer
+
+## [0.2.10](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authn-plugin-v0.2.9...cf-static-authn-plugin-v0.2.10) - 2026-05-06
+
+### Other
+
+- release (by @github-actions[bot]) - #1827
+- *(gts)* migrate vendor slug from `x` to `cf` (by @Artifizer)
+- massive renaming of different artifacts from HyperSport -> CyberFabric to finalize project transition under CyberFabric (by @Artifizer) - #1805
+
+### Contributors
+
+* @github-actions[bot]
+* @Artifizer
+
+## [0.1.21](https://github.com/cyberfabric/cyberfabric-core/compare/cf-single-tenant-tr-plugin-v0.1.20...cf-single-tenant-tr-plugin-v0.1.21) - 2026-05-06
+
+### Other
+
+- release (by @github-actions[bot]) - #1827
+- massive renaming of different artifacts from HyperSport -> CyberFabric to finalize project transition under CyberFabric (by @Artifizer) - #1805
+
+### Contributors
+
+* @github-actions[bot]
+* @Artifizer
+
+## [0.1.2](https://github.com/cyberfabric/cyberfabric-core/compare/cf-rg-tr-plugin-v0.1.1...cf-rg-tr-plugin-v0.1.2) - 2026-05-06
+
+### Other
+
+- release (by @github-actions[bot]) - #1827
+- massive renaming of different artifacts from HyperSport -> CyberFabric to finalize project transition under CyberFabric (by @Artifizer) - #1805
+
+### Contributors
+
+* @github-actions[bot]
+* @Artifizer
+
 ## [0.6.3](https://github.com/cyberfabric/cyberfabric-core/compare/types-sdk-v0.6.2...types-sdk-v0.6.3) - 2026-05-06
 
 ### Other
