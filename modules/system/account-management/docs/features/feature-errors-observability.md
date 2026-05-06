@@ -249,7 +249,7 @@ The module **MUST** export the 7 domain-specific metric families required by PRD
 
 ### Audit Contract and `actor=system` Emission
 
-- [x] `p1` - **ID**: `cpt-cf-account-management-dod-errors-observability-audit-contract`
+- [ ] `p1` - **ID**: `cpt-cf-account-management-dod-errors-observability-audit-contract`
 
 **PR1 scope**: `AuditActor` / `AuditEvent` / `AuditEventKind` shapes ship in the impl crate at `cf-account-management::domain::audit` with `serde` `camelCase` wire format. The downstream public surface for these shapes is the `cf-account-management-sdk` SDK crate (`account_management_sdk::audit`, exported once consumers stabilize); module-internal callers may import from the impl-crate path until the SDK re-exports land. The `AuditEmitter` runtime, sinks, and the per-call-site `emit_audit` invocations land with the audit-classifier set in a later PR.
 

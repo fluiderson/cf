@@ -10,10 +10,10 @@ use modkit_security::AccessScope;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use uuid::Uuid;
 
+use account_management_sdk::{ListChildrenQuery, TenantPage};
+
 use crate::domain::error::DomainError;
-use crate::domain::tenant::model::{
-    ChildCountFilter, ListChildrenQuery, TenantModel, TenantPage, TenantStatus,
-};
+use crate::domain::tenant::model::{ChildCountFilter, TenantModel, TenantStatus};
 use crate::infra::storage::entity::{tenant_closure, tenants};
 
 use super::TenantRepoImpl;
@@ -42,7 +42,7 @@ pub(super) async fn list_children(
     repo: &TenantRepoImpl,
     scope: &AccessScope,
     query: &ListChildrenQuery,
-) -> Result<TenantPage, DomainError> {
+) -> Result<TenantPage<TenantModel>, DomainError> {
     let conn = repo.db.conn()?;
 
     // Base filter: parent_id = query.parent_id AND status filter.
@@ -53,7 +53,11 @@ pub(super) async fn list_children(
         Some(statuses) if !statuses.is_empty() => {
             let mut any_of = Condition::any();
             for s in statuses {
-                any_of = any_of.add(tenants::Column::Status.eq(s.as_smallint()));
+                // SDK status (3 public variants) -> internal 4-variant
+                // -> SMALLINT encoding consumed by the `tenants.status`
+                // column.
+                let internal: TenantStatus = (*s).into();
+                any_of = any_of.add(tenants::Column::Status.eq(internal.as_smallint()));
             }
             any_of
         }
@@ -78,7 +82,7 @@ pub(super) async fn list_children(
         .filter(base.clone())
         .order_by(tenants::Column::CreatedAt, Order::Asc)
         .order_by(tenants::Column::Id, Order::Asc)
-        .limit(u64::from(query.top))
+        .limit(u64::from(query.top()))
         .offset(u64::from(query.skip))
         .all(&conn)
         .await
@@ -99,7 +103,7 @@ pub(super) async fn list_children(
 
     Ok(TenantPage {
         items,
-        top: query.top,
+        top: query.top(),
         skip: query.skip,
         total: Some(total),
     })
