@@ -9,6 +9,12 @@ release-plz updates this file in the Release PR.
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/cyberfabric/cyberfabric-core/compare/types-sdk-v0.6.2...types-sdk-v0.6.3) - 2026-05-06
+
+### Other
+
+- updated the following local packages: cf-modkit-odata
+
 ## [0.1.1](https://github.com/cyberfabric/cyberfabric-core/compare/cf-tr-authz-plugin-v0.1.0...cf-tr-authz-plugin-v0.1.1) - 2026-05-01
 
 ### Other
