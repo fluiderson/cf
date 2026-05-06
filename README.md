@@ -21,7 +21,7 @@ CyberFabric is not a ready-to-use service — it is a set of well-integrated lib
 
 **Engineering principles:**
 - **Spec-Driven Development**: [Specification templates](docs/spec-templates/README.md) (PRD, Design, ADR, Feature) define what gets built *before* code is written. Every module is well documented.
-- **Shift Left**: Custom [dylint](tools/dylint_lints/) architectural lints enforce design rules at compile time, alongside Clippy, [E2E tests](#e2e-tests), fuzzing, and security audits in CI
+- **Shift Left**: Custom [dylint](tools/dylint_lints/) architectural lints enforce design rules at compile time, alongside Clippy, [tests](#testing), fuzzing, and security audits in CI
 - **Quality First**: 90%+ test coverage target with unit, integration, E2E, performance, and security testing
 - **Core in Rust**: Compile-time safety, deep static analysis including project-specific lints, so more issues are prevented before review/runtime
 - **Monorepo**: Core modules and contracts in one place for atomic refactors, consistent tooling/CI, and realistic local build + E2E testing
