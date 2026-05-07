@@ -3,6 +3,7 @@
 //! This module implements token acquisition, caching, and automatic injection
 //! for outbound HTTP requests to vendor services secured with `OAuth2`.
 
+pub mod auto_refresh;
 pub mod builder_ext;
 pub mod config;
 pub(crate) mod discovery;
@@ -13,6 +14,10 @@ pub(crate) mod source;
 pub mod token;
 pub mod types;
 
+pub use auto_refresh::{
+    BearerAuthAutoRefreshLayer, BearerAuthAutoRefreshOpts, BearerAuthAutoRefreshService,
+    DEFAULT_MIN_INVALIDATION_INTERVAL, ShouldRefreshFn,
+};
 pub use builder_ext::HttpClientBuilderExt;
 pub use config::OAuthClientConfig;
 pub use error::TokenError;
