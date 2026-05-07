@@ -13,6 +13,117 @@ release-plz updates this file in the Release PR.
 
 ### Other
 
+- release (by @github-actions[bot]) - #1852
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.1.1](https://github.com/cyberfabric/cyberfabric-core/compare/cf-account-management-sdk-v0.1.0...cf-account-management-sdk-v0.1.1) - 2026-05-07
+
+### Other
+
+- release (by @github-actions[bot]) - #1852
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.1.3](https://github.com/cyberfabric/cyberfabric-core/compare/cf-tr-authz-plugin-v0.1.2...cf-tr-authz-plugin-v0.1.3) - 2026-05-07
+
+### Other
+
+- release (by @github-actions[bot]) - #1852
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.1.21](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-tr-plugin-v0.1.20...cf-static-tr-plugin-v0.1.21) - 2026-05-07
+
+### Other
+
+- release (by @github-actions[bot]) - #1852
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.1.18](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-credstore-plugin-v0.1.17...cf-static-credstore-plugin-v0.1.18) - 2026-05-07
+
+### Other
+
+- release (by @github-actions[bot]) - #1852
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.1.20](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authz-plugin-v0.1.19...cf-static-authz-plugin-v0.1.20) - 2026-05-07
+
+### Other
+
+- release (by @github-actions[bot]) - #1852
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.3.0](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authn-plugin-v0.2.10...cf-static-authn-plugin-v0.3.0) - 2026-05-07
+
+### Added
+
+- *(static-authn-plugin)* propagate bearer_token through S2S credential exchange (by @capybutler)
+
+### Other
+
+- release (by @github-actions[bot]) - #1852
+- Merge pull request #1855 from capybutler/add-s2s-bearer-token-to-static-authn-plugin (by @Artifizer) - #1855
+
+### Contributors
+
+* @github-actions[bot]
+* @Artifizer
+* @capybutler
+
+## [0.1.22](https://github.com/cyberfabric/cyberfabric-core/compare/cf-single-tenant-tr-plugin-v0.1.21...cf-single-tenant-tr-plugin-v0.1.22) - 2026-05-07
+
+### Other
+
+- release (by @github-actions[bot]) - #1852
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.1.3](https://github.com/cyberfabric/cyberfabric-core/compare/cf-rg-tr-plugin-v0.1.2...cf-rg-tr-plugin-v0.1.3) - 2026-05-07
+
+### Other
+
+- release (by @github-actions[bot]) - #1852
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.6.10](https://github.com/cyberfabric/cyberfabric-core/compare/cf-modkit-v0.6.9...cf-modkit-v0.6.10) - 2026-05-07
+
+### Other
+
+- release (by @github-actions[bot]) - #1852
+- Merge pull request #1778 from asmith987/refactor/migrate-to-canonical-errors-pt2 (by @Artifizer) - #1778
+- migrate file-parser, simple-user-settings, node-registry and type-registry to canonical errors (by @asmith987) - #1778
+
+### Contributors
+
+* @github-actions[bot]
+* @Artifizer
+* @asmith987
+
+## [0.1.1](https://github.com/cyberfabric/cyberfabric-core/compare/cf-account-management-v0.1.0...cf-account-management-v0.1.1) - 2026-05-07
+
+### Other
+
 - updated the following local packages: cf-modkit, cf-authz-resolver-sdk, cf-tenant-resolver-sdk, cf-resource-group-sdk, cf-account-management-sdk
 
 ## [0.1.1](https://github.com/cyberfabric/cyberfabric-core/compare/cf-account-management-sdk-v0.1.0...cf-account-management-sdk-v0.1.1) - 2026-05-07
