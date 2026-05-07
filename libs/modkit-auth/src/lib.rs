@@ -29,8 +29,14 @@ pub use providers::JwksKeyProvider;
 pub use standard_claims::StandardClaim;
 pub use validation::{ValidationConfig, validate_claims};
 
-// Outbound OAuth2 exports
+// Outbound OAuth2 exports.
+//
+// `BearerAuthAutoRefreshService`, `ShouldRefreshFn`, and
+// `DEFAULT_MIN_INVALIDATION_INTERVAL` are intentionally accessible only via
+// the `oauth2` namespace - they are wiring details rather than entry-point
+// API.
 pub use oauth2::{
-    BearerAuthLayer, ClientAuthMethod, FetchedToken, HttpClientBuilderExt, OAuthClientConfig,
-    SecretString, Token, TokenError, fetch_token,
+    BearerAuthAutoRefreshLayer, BearerAuthAutoRefreshOpts, BearerAuthLayer, ClientAuthMethod,
+    FetchedToken, HttpClientBuilderExt, OAuthClientConfig, SecretString, Token, TokenError,
+    fetch_token,
 };

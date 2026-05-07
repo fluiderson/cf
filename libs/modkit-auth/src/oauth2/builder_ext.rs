@@ -1,6 +1,7 @@
 use http::header::HeaderName;
 use tower::ServiceExt;
 
+use super::auto_refresh::{BearerAuthAutoRefreshLayer, BearerAuthAutoRefreshOpts};
 use super::layer::BearerAuthLayer;
 use super::token::Token;
 
@@ -24,6 +25,34 @@ pub trait HttpClientBuilderExt {
     /// Add `<header_name>: Bearer <token>` injection to the HTTP client.
     #[must_use]
     fn with_bearer_auth_header(self, token: Token, header_name: HeaderName) -> Self;
+
+    /// Add bearer auth plus reactive refresh-on-401 to the HTTP client.
+    ///
+    /// Default options: `Authorization` header, retry on `401` only,
+    /// 15-minute throttle on `Token::invalidate`. See
+    /// [`BearerAuthAutoRefreshLayer`] (Rust port of go-appkit's
+    /// `AuthBearerRoundTripper`) for the full behavior contract.
+    ///
+    /// Auto-refresh costs one cheap request clone per call (the original
+    /// request is replayed on retry). Prefer
+    /// [`HttpClientBuilderExt::with_bearer_auth`] when the upstream is known
+    /// not to revoke tokens out-of-band.
+    #[must_use]
+    fn with_bearer_auth_auto_refresh(self, token: Token) -> Self;
+
+    /// Add bearer auth plus reactive refresh-on-401 stamped into a custom
+    /// header. Other options (predicate, throttle) use defaults.
+    #[must_use]
+    fn with_bearer_auth_auto_refresh_header(self, token: Token, header_name: HeaderName) -> Self;
+
+    /// Add bearer auth plus reactive refresh-on-401 with explicit options.
+    /// See [`BearerAuthAutoRefreshOpts`].
+    #[must_use]
+    fn with_bearer_auth_auto_refresh_opts(
+        self,
+        token: Token,
+        opts: BearerAuthAutoRefreshOpts,
+    ) -> Self;
 }
 
 impl HttpClientBuilderExt for modkit_http::HttpClientBuilder {
@@ -39,6 +68,40 @@ impl HttpClientBuilderExt for modkit_http::HttpClientBuilder {
 
     fn with_bearer_auth_header(self, token: Token, header_name: HeaderName) -> Self {
         let layer = BearerAuthLayer::with_header_name(token, header_name);
+        self.with_auth_layer(move |svc| {
+            tower::ServiceBuilder::new()
+                .layer(layer)
+                .service(svc)
+                .boxed_clone()
+        })
+    }
+
+    fn with_bearer_auth_auto_refresh(self, token: Token) -> Self {
+        let layer = BearerAuthAutoRefreshLayer::new(token);
+        self.with_auth_layer(move |svc| {
+            tower::ServiceBuilder::new()
+                .layer(layer)
+                .service(svc)
+                .boxed_clone()
+        })
+    }
+
+    fn with_bearer_auth_auto_refresh_header(self, token: Token, header_name: HeaderName) -> Self {
+        self.with_bearer_auth_auto_refresh_opts(
+            token,
+            BearerAuthAutoRefreshOpts {
+                header_name,
+                ..BearerAuthAutoRefreshOpts::default()
+            },
+        )
+    }
+
+    fn with_bearer_auth_auto_refresh_opts(
+        self,
+        token: Token,
+        opts: BearerAuthAutoRefreshOpts,
+    ) -> Self {
+        let layer = BearerAuthAutoRefreshLayer::with_opts(token, opts);
         self.with_auth_layer(move |svc| {
             tower::ServiceBuilder::new()
                 .layer(layer)
@@ -151,6 +214,62 @@ mod tests {
             .unwrap();
 
         api_mock.assert();
+    }
+
+    #[tokio::test]
+    async fn with_bearer_auth_auto_refresh_retries_on_401() {
+        // Token endpoint: returns tok-A initially, then tok-B after the
+        // 401 triggers an invalidate.
+        let oauth_server = MockServer::start();
+        let mut initial_mock = oauth_server.mock(|when, then| {
+            when.method(POST).path("/token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(token_json("tok-auto-A", 3600));
+        });
+        let token = Token::new(token_config(&oauth_server)).await.unwrap();
+        assert_eq!(initial_mock.calls(), 1, "initial fetch");
+
+        initial_mock.delete();
+        let refreshed_mock = oauth_server.mock(|when, then| {
+            when.method(POST).path("/token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(token_json("tok-auto-B", 3600));
+        });
+
+        // API server: 401 for tok-A, 200 for tok-B.
+        let api_server = MockServer::start();
+        let unauth_mock = api_server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/data")
+                .header("authorization", "Bearer tok-auto-A");
+            then.status(401);
+        });
+        let ok_mock = api_server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/data")
+                .header("authorization", "Bearer tok-auto-B");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true}"#);
+        });
+
+        let client = modkit_http::HttpClientBuilder::new()
+            .with_bearer_auth_auto_refresh(token)
+            .build()
+            .unwrap();
+
+        let resp = client
+            .get(&format!("http://localhost:{}/api/data", api_server.port()))
+            .send()
+            .await
+            .unwrap();
+
+        assert!(resp.status().is_success(), "retry returned 200");
+        unauth_mock.assert_calls(1);
+        ok_mock.assert_calls(1);
+        assert_eq!(refreshed_mock.calls(), 1, "exactly one invalidate fetch");
     }
 
     #[tokio::test]
