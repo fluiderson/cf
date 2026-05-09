@@ -1,8 +1,8 @@
 name: PR → Pull Request Project Sync
 
 on:
-  schedule:
-    - cron: "0 8-23 * * *"
+  # schedule:
+  #   - cron: "0 8-23 * * *"
 
   workflow_dispatch:
 
