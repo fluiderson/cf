@@ -42,11 +42,11 @@ Created:  2026-04-01 by Diffora
 
 ### 1.1 Architectural Vision
 
-AM is the foundational multi-tenancy source-of-truth module for the Cyber Fabric platform. It owns the tenant hierarchy, tenant type enforcement, barrier metadata, delegated IdP user operations, and extensible tenant metadata. AM follows the standard ModKit module pattern under `modules/system/account-management/`: a planned SDK crate (`account-management-sdk`) exposes transport-agnostic traits and models, and a planned implementation crate (`account-management`) provides the module lifecycle, REST API, domain logic, and infrastructure adapters.
+AM is the foundational multi-tenancy source-of-truth module for the Cyber Ware platform. It owns the tenant hierarchy, tenant type enforcement, barrier metadata, delegated IdP user operations, and extensible tenant metadata. AM follows the standard ModKit module pattern under `modules/system/account-management/`: a planned SDK crate (`account-management-sdk`) exposes transport-agnostic traits and models, and a planned implementation crate (`account-management`) provides the module lifecycle, REST API, domain logic, and infrastructure adapters.
 
 The architecture separates data ownership from enforcement. AM stores and validates the tenant tree structure, barrier flags, and type constraints. It does not evaluate authorization policies, generate SQL predicates, or validate bearer tokens on the per-request path. Tenant Resolver and AuthZ Resolver consume AM source-of-truth data for runtime enforcement. This separation keeps AM focused on administrative correctness while letting specialized resolvers optimize the hot path independently.
 
-IdP integration uses the CyberFabric gateway + plugin pattern, analogous to AuthN Resolver (see `cpt-cf-account-management-adr-idp-contract-separation`). AM defines an `IdpProviderPluginClient` trait for tenant and user administrative operations (provider availability check, tenant provisioning/deprovisioning, user provision/deprovision, tenant-scoped query). The plugin is discovered via GTS types-registry and resolved through `ClientHub`. The platform ships a default provider plugin; vendors substitute their own implementation behind the same trait. The IdP provider plugin is intentionally separate from the AuthN Resolver plugin — the two target different concerns (admin operations vs hot-path token validation) with different performance profiles and protocols. The contract is one-directional: AM calls IdP, IdP does not call AM.
+IdP integration uses the Cyber Ware gateway + plugin pattern, analogous to AuthN Resolver (see `cpt-cf-account-management-adr-idp-contract-separation`). AM defines an `IdpProviderPluginClient` trait for tenant and user administrative operations (provider availability check, tenant provisioning/deprovisioning, user provision/deprovision, tenant-scoped query). The plugin is discovered via GTS types-registry and resolved through `ClientHub`. The platform ships a default provider plugin; vendors substitute their own implementation behind the same trait. The IdP provider plugin is intentionally separate from the AuthN Resolver plugin — the two target different concerns (admin operations vs hot-path token validation) with different performance profiles and protocols. The contract is one-directional: AM calls IdP, IdP does not call AM.
 
 User group management is handled by the [Resource Group](../../resource-group/docs/PRD.md) module. AM registers a dedicated Resource Group type for user groups during module initialization; consumers call `ResourceGroupClient` directly for group lifecycle, membership, and hierarchy operations.
 
@@ -145,7 +145,7 @@ The following architecture decisions are adopted in this DESIGN:
 
 | Decision Area | Adopted Approach | ADR |
 |---------------|-----------------|-----|
-| IdP contract design | Separate IdP provider plugin (`IdpProviderPluginClient`) from AuthN Resolver plugin, both following CyberFabric gateway + plugin pattern with independent GTS schemas. | `cpt-cf-account-management-adr-idp-contract-separation` — [ADR-0001](ADR/0001-cpt-cf-account-management-adr-idp-contract-separation.md) |
+| IdP contract design | Separate IdP provider plugin (`IdpProviderPluginClient`) from AuthN Resolver plugin, both following Cyber Ware gateway + plugin pattern with independent GTS schemas. | `cpt-cf-account-management-adr-idp-contract-separation` — [ADR-0001](ADR/0001-cpt-cf-account-management-adr-idp-contract-separation.md) |
 | Metadata inheritance | Walk-up resolution at read time via `parent_id` ancestor chain. The walk stops at self-managed barriers and otherwise continues to the root; no write amplification, always consistent. | `cpt-cf-account-management-adr-metadata-inheritance` — [ADR-0002](ADR/0002-cpt-cf-account-management-adr-metadata-inheritance.md) |
 | Conversion approval | Stateful `ConversionRequest` entity with a configurable approval window (default 72h), partial unique index for at-most-one pending row per tenant, background expiry and soft-delete retention jobs. Symmetric collection-based REST API (`/conversions` child-scope, `/child-conversions` parent-scope, each with `{request_id}`) lets each side initiate via `POST` and resolve via `PATCH` from its own AuthZ scope. Lifecycle enum is five-valued (`pending`/`approved`/`cancelled`/`rejected`/`expired`) with explicit actor-per-status semantics. | `cpt-cf-account-management-adr-conversion-approval` — [ADR-0003](ADR/0003-cpt-cf-account-management-adr-conversion-approval.md) |
 | User identity source of truth | IdP is the single source of truth for user identity data (credentials, profile, authentication state, user existence). AM does not maintain a local user table, projection, or cache. | `cpt-cf-account-management-adr-idp-user-identity-source-of-truth` — [ADR-0005](ADR/0005-cpt-cf-account-management-adr-idp-user-identity-source-of-truth.md) |
@@ -236,7 +236,7 @@ AM does not maintain a local user table, user projection, or cached user-tenant 
 
 - [ ] `p2` - **ID**: `cpt-cf-account-management-constraint-security-context`
 
-All AM API endpoints require a valid `SecurityContext` propagated by the Cyber Fabric framework. `PolicyEnforcer` PEP pattern is applied on every REST handler. AM does not construct, validate, or modify `SecurityContext` — it consumes the context provided by the framework.
+All AM API endpoints require a valid `SecurityContext` propagated by the Cyber Ware framework. `PolicyEnforcer` PEP pattern is applied on every REST handler. AM does not construct, validate, or modify `SecurityContext` — it consumes the context provided by the framework.
 
 **ADRs**: None yet — framework convention.
 
@@ -252,7 +252,7 @@ Tenant creation and type validation require the GTS Types Registry to be availab
 
 - [ ] `p2` - **ID**: `cpt-cf-account-management-constraint-no-authz-eval`
 
-AM does not evaluate allow/deny decisions, interpret authorization policies, validate bearer tokens, or generate SQL predicates for tenant scoping. These responsibilities belong to AuthZ Resolver, Tenant Resolver, and the Cyber Fabric framework respectively.
+AM does not evaluate allow/deny decisions, interpret authorization policies, validate bearer tokens, or generate SQL predicates for tenant scoping. These responsibilities belong to AuthZ Resolver, Tenant Resolver, and the Cyber Ware framework respectively.
 
 **ADRs**: None yet — platform architecture boundary.
 
@@ -577,7 +577,7 @@ Each category is alerted and dashboarded distinctly. Zero-value emissions occur 
 
 **Single-flight**: AM enforces at-most-one concurrent integrity check so a long-running run cannot pile up against itself. The mechanism is uniform across PostgreSQL and SQLite and uses a **three-transaction lifecycle** so the gate row is committed (and therefore visible) for the duration of the work: a short *acquire* transaction inserts a row into `integrity_check_runs` keyed by the synthetic singleton id (`id = 1`, enforced by a `CHECK` constraint) and commits before the snapshot transaction begins; the *snapshot/work* transaction performs the SecureSelect load + classifiers (and, for repair, the closure-side writes); a final short *release* transaction deletes the gate row keyed by `worker_id`. The PRIMARY KEY on the singleton `id` is the atomic claim primitive — concurrent acquires receive a unique-violation that maps to `DomainError::IntegrityCheckInProgress` (boundary-converted to `CanonicalError::ResourceExhausted`, HTTP 429). The acquire path also sweeps stale rows whose `started_at` is older than `MAX_LOCK_AGE` so a row left behind by a crashed worker does not block indefinitely; the release path warns when the DELETE affected zero rows so an eviction by stale-lock sweep is observable in telemetry. The legacy `pg_try_advisory_xact_lock` path is intentionally not used — uniform single-flight semantics across both backends is the whole point of the gate. Contention surfaces are translated by the REST and SDK error-mapping layers to HTTP `429 Too Many Requests` per `errors-observability`; callers retry with backoff, AM does not queue.
 
-**Test strategy**: a single feature-gated integration test file (`tests/integrity_integration.rs`) hosts two `#[cfg(feature = "postgres")] mod pg` and `#[cfg(feature = "sqlite")] mod sqlite` blocks plus a shared seed/assertion `common` module. Each backend exercises a positive and a negative case per category plus a single-flight contention test asserting the `429` path. Postgres coverage uses a testcontainers Postgres image (workspace pattern via `cf-modkit-db` dev-dependencies); SQLite coverage uses `:memory:` databases (portable across SQLite >= 3.8.3). The Rust-side cycle detector (DFS with seen-set, bounded by `tenants.len()`) is unit-tested in `audit/classifiers/cycle.rs` against both true cycles and deep linear chains to guard against false positives.
+**Test strategy**: a single feature-gated integration test file (`tests/integrity_integration.rs`) hosts two `#[cfg(feature = "postgres")] mod pg` and `#[cfg(feature = "sqlite")] mod sqlite` blocks plus a shared seed/assertion `common` module. Each backend exercises a positive and a negative case per category plus a single-flight contention test asserting the `429` path. Postgres coverage uses a testcontainers Postgres image (workspace pattern via `cyberware-modkit-db` dev-dependencies); SQLite coverage uses `:memory:` databases (portable across SQLite >= 3.8.3). The Rust-side cycle detector (DFS with seen-set, bounded by `tenants.len()`) is unit-tested in `audit/classifiers/cycle.rs` against both true cycles and deep linear chains to guard against false positives.
 
 #### ConversionService
 
@@ -782,7 +782,7 @@ This interface exposes raw and resolved tenant metadata keyed by registered GTS 
 - [ ] `p1` - **ID**: `cpt-cf-account-management-interface-idp-plugin`
 
 - **Contracts**: `cpt-cf-account-management-contract-idp-provider`, `cpt-cf-account-management-contract-gts-registry`
-- **Technology**: CyberFabric plugin (Rust trait + GTS discovery + ClientHub registration)
+- **Technology**: Cyber Ware plugin (Rust trait + GTS discovery + ClientHub registration)
 - **Location**: `modules/system/account-management/account-management-sdk/src/idp.rs`
 - **ADR**: `cpt-cf-account-management-adr-idp-contract-separation`
 

@@ -1,6 +1,6 @@
-# CyberFabric SDLC — Artifacts
+# Cyber Ware SDLC — Artifacts
 
-This directory contains Cypilot kit templates/checklists/examples for CyberFabric.
+This directory contains Cypilot kit templates/checklists/examples for Cyber Ware.
 
 KINDs:
 - `PRD`

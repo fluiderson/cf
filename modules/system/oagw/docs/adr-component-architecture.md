@@ -134,4 +134,4 @@ Single crate with no CP/DP trait distinction — all logic in handlers.
 ## References
 
 - Modkit framework documentation (module lifecycle and dependency injection)
-- CyberFabric module patterns: `tenant_resolver`, `types_registry`
+- Cyber Ware module patterns: `tenant_resolver`, `types_registry`

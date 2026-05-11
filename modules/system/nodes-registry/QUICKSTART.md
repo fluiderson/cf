@@ -1,6 +1,6 @@
 # Nodes Registry - Quickstart
 
-Tracks and reports information about all CyberFabric server instances in your deployment.
+Tracks and reports information about all Cyber Ware server instances in your deployment.
 
 **Provides:**
 - Node identification (ID, hostname, IP address)
@@ -9,7 +9,7 @@ Tracks and reports information about all CyberFabric server instances in your de
 - Registration timestamps
 
 **Use cases:**
-- Monitor distributed CyberFabric deployments
+- Monitor distributed Cyber Ware deployments
 - Load balancing and resource allocation
 - Health checks and diagnostics
 
