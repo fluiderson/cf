@@ -79,11 +79,11 @@ C4Context
 
 | Requirement | PRD Reference | Design Response |
 |-------------|---------------|-----------------|
-| JWT token validation | `cpt-cf-authn-plugin-fr-jwt-validation` | Token Validator component performs local JWT signature verification using cached JWKS from the IdP's standard `jwks_uri` endpoint. Supports RS256 and ES256 algorithms. |
+| JWT token validation | `cpt-cf-authn-plugin-fr-jwt-validation`, `cpt-cf-authn-plugin-fr-non-jwt-rejection`, `cpt-cf-authn-plugin-fr-trusted-issuers`, `cpt-cf-authn-plugin-fr-key-rotation`, `cpt-cf-authn-plugin-fr-audience-validation` | Token Validator component performs JWT-only local validation using cached JWKS from the IdP's standard `jwks_uri` endpoint. It rejects non-JWT token formats, enforces trusted issuer and optional audience policy, supports RS256 and ES256 algorithms, and force-refreshes JWKS when a presented `kid` is not cached. |
 | Claim extraction and tenant isolation | `cpt-cf-authn-plugin-fr-claim-mapping`, `cpt-cf-authn-plugin-fr-tenant-claim` | Claim Mapper component extracts `sub`, configurable `tenant_id`, and optional `subject_type` claims from validated tokens. `tenant_id` is required — tokens without it are rejected. |
 | OIDC auto-configuration | `cpt-cf-authn-plugin-fr-oidc-discovery`, `cpt-cf-authn-plugin-fr-jwks-caching` | OIDC Discovery component fetches and caches the IdP's `.well-known/openid-configuration` to resolve `jwks_uri` and `token_endpoint` dynamically. |
 | First-party vs third-party app detection | `cpt-cf-authn-plugin-fr-first-party-detection` | Claim Mapper checks `client_id`/`azp` against a configured first-party clients list. First-party apps receive unrestricted scopes (`["*"]`); third-party apps receive only their granted scopes. |
-| S2S client credentials exchange | `cpt-cf-authn-plugin-fr-s2s-exchange`, `cpt-cf-authn-plugin-fr-s2s-caching` | Token Client component implements OAuth2 `client_credentials` grant (RFC 6749 §4.4) for service-to-service authentication, with token caching and IdP endpoint resolution. |
+| S2S client credentials exchange | `cpt-cf-authn-plugin-fr-s2s-exchange`, `cpt-cf-authn-plugin-fr-s2s-caching`, `cpt-cf-authn-plugin-fr-s2s-default-subject-type` | Token Client component implements OAuth2 `client_credentials` grant (RFC 6749 §4.4) for service-to-service authentication, with token caching, IdP endpoint resolution, and configured default `subject_type` fallback when the token omits that claim. |
 | Plugin discovery and registration | `cpt-cf-authn-plugin-fr-clienthub-registration` | Plugin registers with Cyber Ware ClientHub using GTS schema identity for vendor-based selection and priority-based fallback. |
 | Resilience & timeouts | `cpt-cf-authn-plugin-fr-request-timeout`, `cpt-cf-authn-plugin-fr-retry-policy`, `cpt-cf-authn-plugin-fr-circuit-breaker` | HTTP Client component applies `http_client.request_timeout` per attempt and retries transient failures (connection errors, 5xx, 429) with exponential backoff + jitter per `retry_policy`. Circuit Breaker component keys state by outbound HTTP host and honors the global `circuit_breaker.enabled` toggle. Retries run **inside** the breaker call so one logical operation equals one breaker attempt. |
 
@@ -128,7 +128,7 @@ C4Context
 
 #### IdP-Agnostic via OIDC Standards
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-principle-idp-agnostic`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-principle-idp-agnostic`
 
 The plugin relies exclusively on OIDC/OAuth2 standard protocols for all IdP interactions: OIDC Discovery (`.well-known/openid-configuration`), JWKS endpoint for signing keys, and the OAuth2 `token_endpoint` for S2S credential exchange. No IdP vendor-specific APIs, admin endpoints, or proprietary extensions are used. Any OIDC-compliant IdP can serve as the platform identity provider without plugin code changes — only configuration changes (issuer URL, audience, claim mappings).
 
@@ -136,7 +136,7 @@ The plugin relies exclusively on OIDC/OAuth2 standard protocols for all IdP inte
 
 #### Fail-Closed Authentication
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-principle-fail-closed`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-principle-fail-closed`
 
 Every error path produces a rejection (`Unauthorized`, `ServiceUnavailable`, or `TokenAcquisitionFailed`). The plugin never returns a default-allow, never falls back to anonymous access, and never degrades to a weaker authentication mode. If the IdP is unreachable and no cached JWKS exists, authenticate requests are rejected with `ServiceUnavailable`; S2S exchanges whose required IdP call cannot complete also fail with `ServiceUnavailable`. Invalid tokens still fail with `Unauthorized`; invalid S2S credentials and non-transient token acquisition contract errors fail with `TokenAcquisitionFailed`.
 
@@ -144,7 +144,7 @@ Every error path produces a rejection (`Unauthorized`, `ServiceUnavailable`, or 
 
 #### JWT-First Validation
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-principle-jwt-first`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-principle-jwt-first`
 
 JWT local validation is the primary and default authentication path. JWTs are validated locally using cached JWKS — no IdP network call is required for the common case. This provides sub-millisecond validation latency and eliminates the IdP as a per-request bottleneck. Opaque token introspection is explicitly out of scope for this plugin; tokens that are not valid JWTs are rejected.
 
@@ -152,7 +152,7 @@ JWT local validation is the primary and default authentication path. JWTs are va
 
 #### Claim-Based Tenant Isolation
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-principle-claim-tenant-isolation`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-principle-claim-tenant-isolation`
 
 Tenant identity is carried as a custom claim in every access token. The claim name is vendor-configurable via `jwt.claim_mapping.subject_tenant_id` (e.g., `"tenant_id"`, `"org_id"`, `"account_id"`). The plugin extracts this claim and populates `SecurityContext.subject_tenant_id`. Since the `SecurityContext` builder requires `subject_tenant_id`, tokens without this claim are rejected with `Unauthorized`. The plugin does not enforce tenant access boundaries — it provides the tenant identity; downstream AuthZ Resolver and Tenant Resolver enforce isolation. This design supports claim-based multi-tenancy scaling to 10,000+ tenants per issuer.
 
@@ -160,7 +160,7 @@ Tenant identity is carried as a custom claim in every access token. The claim na
 
 #### Minimalist Gateway Interface
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-principle-minimalist-interface`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-principle-minimalist-interface`
 
 The gateway exposes a single `authenticate(bearer_token)` method and a single `exchange_client_credentials(request)` method. Plugin-internal complexity (JWKS caching, key rotation, discovery, claim mapping) is hidden from consumers. This keeps the contract simple, easy to mock in tests, and decoupled from IdP-specific details.
 
@@ -172,7 +172,7 @@ The gateway exposes a single `authenticate(bearer_token)` method and a single `e
 
 #### OIDC/OAuth2 Standards Compliance
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-oidc-standards`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-oidc-standards`
 
 The plugin implements: JWT validation per RFC 7519, OIDC Discovery per OpenID Connect Discovery 1.0, JWKS per RFC 7517, and OAuth2 `client_credentials` grant per RFC 6749 §4.4. All IdP interactions use standard OIDC endpoints discovered from `.well-known/openid-configuration`. No vendor-specific extensions are required.
 
@@ -180,7 +180,7 @@ The plugin implements: JWT validation per RFC 7519, OIDC Discovery per OpenID Co
 
 #### SecurityContext Contract
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-security-context`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-security-context`
 
 The plugin produces a `SecurityContext` (defined in `modkit-security`) with fields: `subject_id` (Uuid, from `sub` claim), `subject_tenant_id` (Uuid, from configurable tenant claim), `subject_type` (optional String, from configurable claim), `token_scopes` (Vec<String>), and `bearer_token` (optional SecretString). All fields must conform to the platform `SecurityContext` builder contract. `subject_id` and `subject_tenant_id` are required — build fails without them.
 
@@ -188,7 +188,7 @@ The plugin produces a `SecurityContext` (defined in `modkit-security`) with fiel
 
 #### GTS Plugin Identity
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-gts-identity`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-gts-identity`
 
 The plugin is identified by a chained GTS schema ID: `gts.cf.core.modkit.plugin.v1~cf.core.authn_resolver.plugin.v1~`. The OIDC plugin instance is registered with vendor key `"cyberfabric"` via `AuthNResolverPluginSpecV1::gts_make_instance_id(...)`. This identity is used for ClientHub registration and vendor-based plugin selection.
 
@@ -196,7 +196,7 @@ The plugin is identified by a chained GTS schema ID: `gts.cf.core.modkit.plugin.
 
 #### ClientHub Registration
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-clienthub`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-clienthub`
 
 The plugin registers `dyn AuthNResolverPluginClient` with Cyber Ware ClientHub using `ClientScope::gts_id()` derived from the plugin's GTS schema ID. The gateway resolves the active plugin at runtime via ClientHub lookup, supporting vendor-based explicit selection and priority-based fallback when multiple plugins are registered.
 
@@ -204,7 +204,7 @@ The plugin registers `dyn AuthNResolverPluginClient` with Cyber Ware ClientHub u
 
 #### No Opaque Token Support
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-no-opaque-tokens`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-no-opaque-tokens`
 
 This plugin validates only JWT access tokens. Opaque tokens (non-JWT bearer tokens) are rejected with `Unauthorized("unsupported token format")`. Token introspection (RFC 7662) is not implemented. If opaque token support is needed in the future, it should be added as a separate plugin or as a configurable extension to this plugin.
 
@@ -212,7 +212,7 @@ This plugin validates only JWT access tokens. Opaque tokens (non-JWT bearer toke
 
 #### No AuthZ Evaluation
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-no-authz`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-no-authz`
 
 The plugin does not evaluate allow/deny decisions, interpret authorization policies, or generate SQL predicates for tenant scoping. These responsibilities belong to AuthZ Resolver, Tenant Resolver, and the Cyber Ware framework respectively. The plugin's output (`SecurityContext`) is input to the AuthZ pipeline.
 
@@ -220,7 +220,7 @@ The plugin does not evaluate allow/deny decisions, interpret authorization polic
 
 #### Platform Versioning Policy
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-versioning`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-versioning`
 
 The SDK traits (`AuthNResolverClient`, `AuthNResolverPluginClient`) are stable interfaces — breaking changes require a new major version with a documented migration path. Within a version, only additive changes are permitted (new optional fields, new methods with default implementations).
 
@@ -228,7 +228,7 @@ The SDK traits (`AuthNResolverClient`, `AuthNResolverPluginClient`) are stable i
 
 #### Vendor and Licensing
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-vendor-licensing`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-vendor-licensing`
 
 The plugin uses only platform-approved open-source dependencies. No proprietary or copyleft-licensed dependencies are introduced. The `jsonwebtoken` crate (MIT) is the primary JWT validation library; HTTP client uses the platform-standard `reqwest` (MIT/Apache-2.0).
 
@@ -240,7 +240,7 @@ Resource constraints (team size, timeline) are not applicable at module level �
 
 #### Legacy System Integration
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-legacy-integration`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-legacy-integration`
 
 Legacy system integration is handled through the pluggable AuthN Resolver plugin interface. Organizations with non-OIDC identity systems can implement their own `AuthNResolverPluginClient` without changes to the gateway or consuming modules.
 
@@ -340,7 +340,7 @@ C4Component
 
 #### Token Validator
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-component-token-validator`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-component-token-validator`
 
 ##### Why this component exists
 
@@ -395,7 +395,7 @@ trusted_issuers:
 
 #### Claim Mapper
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-component-claim-mapper`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-component-claim-mapper`
 
 ##### Why this component exists
 
@@ -438,7 +438,7 @@ Does not validate JWT signatures. Does not fetch JWKS or interact with the IdP. 
 
 #### OIDC Discovery
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-component-oidc-discovery`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-component-oidc-discovery`
 
 ##### Why this component exists
 
@@ -484,7 +484,7 @@ Does not validate tokens. Does not manage token lifecycle. Does not perform intr
 
 #### Token Client (S2S)
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-component-token-client-s2s`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-component-token-client-s2s`
 
 ##### Why this component exists
 
@@ -527,7 +527,7 @@ Does not manage client credentials (rotation, provisioning). Does not perform us
 
 #### HTTP Client
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-component-http-client`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-component-http-client`
 
 ##### Why this component exists
 
@@ -581,7 +581,7 @@ A full operator-facing configuration example covering every knob documented in t
 
 #### Circuit Breaker
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-component-circuit-breaker`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-component-circuit-breaker`
 
 ##### Why this component exists
 
@@ -627,7 +627,7 @@ Does not affect in-memory cache lookups. Does not make authentication decisions 
 
 #### Configuration Validation
 
-- [ ] `p2` - **ID**: `cpt-cf-authn-plugin-component-config-validation`
+- [x] `p2` - **ID**: `cpt-cf-authn-plugin-component-config-validation`
 
 ##### Why this component exists
 
